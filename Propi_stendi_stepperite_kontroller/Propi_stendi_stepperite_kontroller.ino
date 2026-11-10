@@ -36,8 +36,8 @@ int feed_accel_x = 800;
 int feed_maxspeed_y = 600;
 int feed_accel_y = 400;
 int x_pos = 0;
-int a;
-int b;
+long a;
+long b;
 
 bool homing_performed = false;
 bool limit_switch_hit = false;
@@ -291,8 +291,9 @@ void receiveEvent(int numBytes) {
       break;
     }
     command += c;
-    parseReceivedMessage(command);
   }
+  // I2C transaction boundary is the command boundary; never act on partial fields.
+  parseReceivedMessage(command);
 }
 
 void parseReceivedMessage(String message) {
@@ -369,53 +370,24 @@ void parseReceivedMessage(String message) {
     SpeedY = mspdY.toInt();
     if (homing_performed == true) {
       measure_now = true;
+      send_position = true; // Include zero-distance and very short measurement moves.
       digitalWrite(enable_pin, LOW);
     }
   }
 }
 
 void requestEvent() {
-  if (home_found == true) {
-    Wire.write(1);
-    delay(100);
-    Wire.write(0);
-    home_found = false;
-    send_position = false;
-  }
-  if (jog_in_pos == true) {
-    Wire.write(2);
-    delay(100);
-    Wire.write(0);
-    jog_in_pos = false;
-    send_position = false;
-  }
-  if (over_axis_limit == true) {
-    Wire.write(3);
-    delay(100);
-    Wire.write(0);
-    over_axis_limit = false;
-    send_position = false;
-  }
-  if (limit_switch_hit == true) {
-    Wire.write(4);
-    delay(100);
-    Wire.write(0);
-    limit_switch_hit = false;
-    send_position = false;
-  }
-  if (center_in_pos == true) {
-    Wire.write(5);
-    delay(100);
-    Wire.write(0);
-    center_in_pos = false;
-    send_position = false;
-  }
-  if (send_position == true) {
-    a = stepperX.currentPosition();
-    b = stepperY.currentPosition();
-    String position = String(a) + "," + String(b) + " ";
-    char buffer[position.length() + 1];
-    position.toCharArray(buffer, position.length() + 1);
+  // One response per I2C request. Never sleep in the Wire interrupt callback.
+  if (limit_switch_hit) { Wire.write(4); limit_switch_hit=false; send_position=false; return; }
+  if (over_axis_limit) { Wire.write(3); over_axis_limit=false; send_position=false; return; }
+  if (home_found) { Wire.write(1); home_found=false; send_position=false; return; }
+  if (jog_in_pos) { Wire.write(2); jog_in_pos=false; send_position=false; return; }
+  if (center_in_pos) { Wire.write(5); center_in_pos=false; send_position=false; return; }
+  if (send_position) {
+    a=stepperX.currentPosition();
+    b=stepperY.currentPosition();
+    char buffer[26];
+    snprintf(buffer,sizeof(buffer),"%ld,%ld ",(long)a,(long)b);
     Wire.write(buffer);
   }
 }

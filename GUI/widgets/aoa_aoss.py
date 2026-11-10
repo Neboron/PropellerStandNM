@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QMessageBox, QHBoxLayout
 )
 import serial
+from i18n import bind_text
 
 
 class AoA_AoSS(QWidget):
@@ -19,10 +20,10 @@ class AoA_AoSS(QWidget):
 
         layout = QVBoxLayout()
         self.setLayout(layout)
-        self.setWindowTitle("AoA ja AoSS telje parameetrite sättimine")
+        bind_text(self, 'AoA and AoSS axis parameters', property_name="windowTitle")
 
-        # ---------------- AoA (unchanged) ----------------
-        self.label50 = QLabel("AoA telje trimm (kraadides)")
+        # ---------------- AoA ----------------
+        self.label50 = bind_text(QLabel(), 'AoA axis trim (degrees)')
         layout.addWidget(self.label50)
 
         self.aoa_trim = QDoubleSpinBox()
@@ -32,22 +33,22 @@ class AoA_AoSS(QWidget):
         self.aoa_trim.setValue(float(getattr(self.shared_data, "aoa_trim", 0.0)))
         layout.addWidget(self.aoa_trim)
 
-        self.aoa_trim_button = QPushButton("Kinnita AoA trimm", self)
+        self.aoa_trim_button = bind_text(QPushButton(self), 'Apply AoA trim')
         self.aoa_trim_button.clicked.connect(self.send_aoa_trim)
         layout.addWidget(self.aoa_trim_button)
 
-        self.label_read_aoa_title = QLabel("AoA nurga väärtus (deg)")
+        self.label_read_aoa_title = bind_text(QLabel(), 'AoA angle (deg)')
         layout.addWidget(self.label_read_aoa_title)
 
         self.label_read_aoa_value = QLabel("—")
         self.label_read_aoa_value.setStyleSheet("border: 1px solid black; padding: 4px;")
         layout.addWidget(self.label_read_aoa_value)
 
-        self.read_aoa_button = QPushButton("Loe nurga väärtus", self)
+        self.read_aoa_button = bind_text(QPushButton(self), 'Read angle')
         self.read_aoa_button.clicked.connect(self.send_read_aoa)
         layout.addWidget(self.read_aoa_button)
 
-        self.label51 = QLabel("Maksimaalne AoA telje käik 0-punkti suhtes (kraadides)")
+        self.label51 = bind_text(QLabel(), 'Maximum AoA travel from zero (degrees)')
         layout.addWidget(self.label51)
 
         self.aoa_limit = QSpinBox()
@@ -57,32 +58,33 @@ class AoA_AoSS(QWidget):
         self.aoa_limit.setValue(int(getattr(self.shared_data, "aoa_limit", 30)))
         layout.addWidget(self.aoa_limit)
 
-        self.aoa_limit_button = QPushButton("Kinnita AoA piirväärtus", self)
+        self.aoa_limit_button = bind_text(QPushButton(self), 'Apply AoA limit')
         self.aoa_limit_button.clicked.connect(self.send_aoa_limit)
         layout.addWidget(self.aoa_limit_button)
 
-        # ---------------- AoSS (NEW logic) ----------------
+        # ---------------- AoSS ----------------
         layout.addWidget(QLabel(""))
 
-        self.aoss_title = QLabel("AoSS telje kalibreerimine ja parameetrid")
+        self.aoss_title = bind_text(QLabel(), 'AoSS axis calibration and parameters')
         self.aoss_title.setStyleSheet("font-weight: 600;")
         layout.addWidget(self.aoss_title)
 
-        self.aoss_hint = QLabel(
-            "Loogika:\n"
-            "1) Muuda AoSSRatio (kui vaja)\n"
-            "2) Säti AoSS telje piirid (min..max)\n"
-            "3) Enne kalibreerimist: disableAoSS\n"
-            "4) Liiguta toru füüsilisse 0 asendisse: moveAoSSTubeAbs|\n"
-            "5) Kontrolli positsiooni: readAoSS\n"
-            "6) Salvesta 0: zeroAoSS\n"
-            "7) Lõpus: enableAoSS"
+        self.aoss_hint = bind_text(
+            QLabel(),
+            "Procedure:\n"
+            "1) Adjust AoSSRatio (if needed)\n"
+            "2) Set AoSS axis limits (min..max)\n"
+            "3) Before calibration: disableAoSS\n"
+            "4) Move the tube to physical zero: moveAoSSTubeAbs|\n"
+            "5) Check position: readAoSS\n"
+            "6) Save zero: zeroAoSS\n"
+            "7) Finish with: enableAoSS"
         )
         self.aoss_hint.setStyleSheet("color: #555;")
         layout.addWidget(self.aoss_hint)
 
         # Ratio
-        self.label_ratio = QLabel("AoSSRatio")
+        self.label_ratio = bind_text(QLabel(), 'AoSSRatio')
         layout.addWidget(self.label_ratio)
 
         self.aoss_ratio = QDoubleSpinBox()
@@ -93,12 +95,12 @@ class AoA_AoSS(QWidget):
         self.aoss_ratio.setValue(float(getattr(self.shared_data, "aoss_ratio", 13.3)))
         layout.addWidget(self.aoss_ratio)
 
-        self.aoss_ratio_button = QPushButton("Kinnita AoSSRatio", self)
+        self.aoss_ratio_button = bind_text(QPushButton(self), 'Apply AoSSRatio')
         self.aoss_ratio_button.clicked.connect(self.send_aoss_ratio)
         layout.addWidget(self.aoss_ratio_button)
 
         # Limits
-        self.label_limits = QLabel("AoSS telje piirid (deg) – min kuni -45, max kuni 0")
+        self.label_limits = bind_text(QLabel(), 'AoSS axis limits (deg) – min down to -45, max up to 0')
         layout.addWidget(self.label_limits)
 
         limits_row = QHBoxLayout()
@@ -116,28 +118,28 @@ class AoA_AoSS(QWidget):
         self.aoss_max_limit.setDecimals(1)
         self.aoss_max_limit.setValue(float(getattr(self.shared_data, "aoss_max_limit_deg", 0.0)))
 
-        limits_row.addWidget(QLabel("min"))
+        limits_row.addWidget(bind_text(QLabel(), 'min'))
         limits_row.addWidget(self.aoss_min_limit)
-        limits_row.addWidget(QLabel("max"))
+        limits_row.addWidget(bind_text(QLabel(), 'max'))
         limits_row.addWidget(self.aoss_max_limit)
         layout.addLayout(limits_row)
 
-        self.aoss_limits_button = QPushButton("Kinnita AoSS piirid", self)
+        self.aoss_limits_button = bind_text(QPushButton(self), 'Apply AoSS limits')
         self.aoss_limits_button.clicked.connect(self.send_aoss_limits)
         layout.addWidget(self.aoss_limits_button)
 
         # Calibration controls
         layout.addWidget(QLabel(""))
 
-        self.aoss_state_label = QLabel("AoSS staatus: —")
+        self.aoss_state_label = bind_text(QLabel(), 'AoSS status: —')
         self.aoss_state_label.setStyleSheet("border: 1px solid black; padding: 4px;")
         layout.addWidget(self.aoss_state_label)
 
-        self.disable_aoss_button = QPushButton("Disable AoSS telg", self)
+        self.disable_aoss_button = bind_text(QPushButton(self), 'Disable AoSS axis')
         self.disable_aoss_button.clicked.connect(self.send_disable_aoss)
         layout.addWidget(self.disable_aoss_button)
 
-        self.move_label = QLabel("Liiguta AoSS toru (abs, deg)")
+        self.move_label = bind_text(QLabel(), 'Move AoSS tube (absolute, deg)')
         layout.addWidget(self.move_label)
 
         self.move_abs = QDoubleSpinBox()
@@ -148,26 +150,26 @@ class AoA_AoSS(QWidget):
         self.move_abs.setValue(0.0)
         layout.addWidget(self.move_abs)
 
-        self.move_abs_button = QPushButton("Liiguta toru: moveAoSSTubeAbs|", self)
+        self.move_abs_button = bind_text(QPushButton(self), 'Move tube: moveAoSSTubeAbs|')
         self.move_abs_button.clicked.connect(self.send_move_aoss_tube_abs)
         layout.addWidget(self.move_abs_button)
 
-        self.label_read_aoss_title = QLabel("AoSS positsiooni lugemine (tube deg)")
+        self.label_read_aoss_title = bind_text(QLabel(), 'Read AoSS position (tube deg)')
         layout.addWidget(self.label_read_aoss_title)
 
         self.label_read_aoss_value = QLabel("—")
         self.label_read_aoss_value.setStyleSheet("border: 1px solid black; padding: 4px;")
         layout.addWidget(self.label_read_aoss_value)
 
-        self.read_aoss_button = QPushButton("Loe AoSS positsioon: readAoSS", self)
+        self.read_aoss_button = bind_text(QPushButton(self), 'Read AoSS position: readAoSS')
         self.read_aoss_button.clicked.connect(self.send_read_aoss)
         layout.addWidget(self.read_aoss_button)
 
-        self.zero_aoss_button = QPushButton("Sea praegune asend 0-ks: zeroAoSS", self)
+        self.zero_aoss_button = bind_text(QPushButton(self), 'Set current position to zero: zeroAoSS')
         self.zero_aoss_button.clicked.connect(self.send_zero_aoss)
         layout.addWidget(self.zero_aoss_button)
 
-        self.enable_aoss_button = QPushButton("Enable AoSS telg", self)
+        self.enable_aoss_button = bind_text(QPushButton(self), 'Enable AoSS')
         self.enable_aoss_button.clicked.connect(self.send_enable_aoss)
         layout.addWidget(self.enable_aoss_button)
 
@@ -253,7 +255,7 @@ class AoA_AoSS(QWidget):
         try:
             self.sendData.emit("disableAoSS")
             self._aoss_disabled = True
-            self.aoss_state_label.setText("AoSS staatus: disabled (kalibreerimine)")
+            bind_text(self.aoss_state_label, 'AoSS status: disabled (calibration)')
             self.aoss_state_label.setStyleSheet("border: 1px solid black; padding: 4px; background-color: orange;")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
@@ -262,7 +264,7 @@ class AoA_AoSS(QWidget):
         try:
             self.sendData.emit("enableAoSS")
             self._aoss_disabled = False
-            self.aoss_state_label.setText("AoSS staatus: enabled")
+            bind_text(self.aoss_state_label, 'AoSS status: enabled')
             self.aoss_state_label.setStyleSheet("border: 1px solid black; padding: 4px; background-color: None;")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
@@ -309,9 +311,12 @@ class AoA_AoSS(QWidget):
         if getattr(self, "_aoss_disabled", False):
             mb = QMessageBox(self)
             mb.setIcon(QMessageBox.Warning)
-            mb.setWindowTitle("AoSS telg on disabled")
-            mb.setText("AoSS telg on praegu välja lülitatud.\n Kas soovid enne sulgemist AoSS telje sisse lülitada?")
+            bind_text(mb, 'AoSS axis is disabled', property_name="windowTitle")
+            bind_text(mb, 'The AoSS axis is currently disabled.\nEnable it before closing?')
             mb.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            bind_text(mb.button(QMessageBox.Yes), "Yes")
+            bind_text(mb.button(QMessageBox.No), "No")
+            bind_text(mb.button(QMessageBox.Cancel), "Cancel")
             mb.setDefaultButton(QMessageBox.Yes)
             ret = mb.exec_()
 

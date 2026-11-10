@@ -10,7 +10,7 @@
 
 // HX711 startup behavior
 #define STABILIZATION_TIME 1000
-#define TARE_ON_START true
+#define SENSOR_STARTUP_TIMEOUT_MS 10000
 
 // === PIN DEFINITIONS (from working multiple_adc_test) ===
 // Prop #0 pins
@@ -46,6 +46,9 @@ struct PinSet { uint8_t thrDAT, thrSCK, trqDAT, trqSCK; };
 class ThrustTorqueController {
 public:
   explicit ThrustTorqueController(uint8_t propellerId);
+  ~ThrustTorqueController();
+  ThrustTorqueController(const ThrustTorqueController&) = delete;
+  ThrustTorqueController& operator=(const ThrustTorqueController&) = delete;
 
   uint8_t begin(float thrustArmLength, float torqueArmLength,
                 float thrustCalibration, float torqueCalibration);
@@ -78,8 +81,8 @@ public:
   float getTorqueCalibration() const;
 
   PinSet pins() const { return _pins; }
-  bool thrustTareTimeout() const { return this->thrust ? this->thrust->getTareTimeoutFlag() : true; }
-  bool torqueTareTimeout() const { return this->torque ? this->torque->getTareTimeoutFlag() : true; }
+  bool thrustTareTimeout() const { return thrustTimeout; }
+  bool torqueTareTimeout() const { return torqueTimeout; }
 
 private:
 
@@ -88,9 +91,11 @@ private:
   HX711_ADC* thrust = nullptr;
   HX711_ADC* torque = nullptr;
 
-  float thrustArmLength = 0.0f; // mm
+  float thrustArmLength = 0.0f; // dimensionless thrust lever ratio
   float torqueArmLength = 0.0f; // mm
   bool init = false;
+  bool thrustTimeout = false;
+  bool torqueTimeout = false;
   bool thrustCalibrated = false;
   bool torqueCalibrated = false;
 };

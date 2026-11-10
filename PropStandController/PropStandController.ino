@@ -5,8 +5,20 @@
 #include <ThreadController.h>
 #include "RpmController.h"
 #include "ThrustTorqueController.h"
+#include "StandTransport.h"
 
 struct InitParams;
+standlink::Transport standLink(Serial);
+standlink::DiagnosticPrint protocolLog(standLink);
+void manageCommands();
+void serviceAxisOperation();
+void sendHeartbeat();
+void escHardStopBoth();
+void printPitotLive(const char* prefix);
+void sendProtocolEvent(uint8_t code, uint8_t seq=0, uint8_t id=0, int32_t x=0, int32_t y=0) {
+  standLink.send(standlink::Event{code,seq,id,x,y});
+}
+
 
 volatile float airspeed_raw;
 volatile float aoa_raw;
@@ -39,9 +51,7 @@ static float aoaRelativeDegFromPhysical(float trimDeg, float physicalDeg) {
 // -----------------------------------------------------------------------------
 // Init packet parsed parameters
 // -----------------------------------------------------------------------------
-// Some versions of this sketch use a helper (initControllersFrom) that takes a
-// parsed init struct. The current build may not call it, but we keep this type
-// so the sketch compiles cleanly.
+// Sensor configuration passed from INIT to initControllersFrom().
 struct InitParams {
   float fTrqArm = 0.0f;
   float fThrArm = 0.0f;
@@ -54,48 +64,6 @@ struct InitParams {
   int   tSetup  = 1;
 };
 
-// Parse INIT payload.
-// Expected 9 numeric values, separated by commas/spaces/semicolons:
-//   fTrqArm,fThrArm,fTrqCal,fThrCal,sTrqArm,sThrArm,sTrqCal,sThrCal,tSetup
-static bool parseInitPayload(const String& payload, InitParams& out) {
-  float v[9];
-  int n = 0;
-
-  auto isSep = [](char c) {
-    return (c == ',' || c == ';' || c == ' ' || c == '|' || c == '\t' || c == '\r' || c == '\n');
-  };
-
-  int i = 0;
-  while (i < payload.length() && n < 9) {
-    // Skip separators
-    while (i < payload.length() && isSep(payload[i])) i++;
-    if (i >= payload.length()) break;
-
-    int start = i;
-    while (i < payload.length() && !isSep(payload[i])) i++;
-
-    String tok = payload.substring(start, i);
-    tok.trim();
-    if (tok.length() == 0) continue;
-
-    v[n++] = tok.toFloat();
-  }
-
-  if (n != 9) return false;
-
-  out.fTrqArm = v[0];
-  out.fThrArm = v[1];
-  out.fTrqCal = v[2];
-  out.fThrCal = v[3];
-  out.sTrqArm = v[4];
-  out.sThrArm = v[5];
-  out.sTrqCal = v[6];
-  out.sThrCal = v[7];
-  out.tSetup  = v[8];
-  return true;
-}
-
-
 // -----------------------------------------------------------------------------
 // CAN AoA servo (HITEC MDB961WP) configuration
 // -----------------------------------------------------------------------------
@@ -105,12 +73,12 @@ static bool parseInitPayload(const String& payload, InitParams& out) {
 
 // Servo CAN settings (MDB961WP)
 static constexpr uint8_t  AOA_CAN_SERVO_ID = 1;     // servo ID
-static constexpr uint16_t AOA_CAN_ARB_ID = 0x001; // CAN BUS ID (11-bit). Your sniff showed 0x1. CAN_SERVO_ARB_ID
+static constexpr uint16_t AOA_CAN_ARB_ID = 0x001; // 11-bit CAN arbitration ID
 
 static constexpr uint8_t REG_POSITION_NEW = 0x1E;  // command position (new format)
 static constexpr uint8_t REG_POSITION     = 0x0C;  // position now
 
-// Servo frame is 180deg rotated vs your physical trim reference
+// Servo frame is rotated 180 degrees from the physical trim reference.
 static constexpr float SERVO_FRAME_OFFSET_DEG = 180.0f;
 static constexpr float SERVO_COUNTS_PER_REV   = 16384.0f;
 static constexpr float SERVO_DEG_PER_REV      = 360.0f;
@@ -204,7 +172,7 @@ static volatile int16_t  aossTurnNow     = 0;
 static volatile float    aossServoDegNow = 0.0f;   // continuous servo shaft angle (deg)
 static volatile float    aossTubeDegNow  = 0.0f;   // calibrated pitot tube physical angle (deg)
 
-static float AoSSratio = 13.3f;   // can be changed at runtime via command if you want
+static float AoSSratio = 13.3f;   // Adjustable through the AOSS_RATIO command
 
 // AoSS calibration + state
 static float aossZeroOffsetDeg = 0.0f;    // servo continuous deg at tube=0
@@ -277,7 +245,7 @@ static float wrapDeg(float deg) {
 // }
 
 static void aossCanCommandServoTubeDeg_NoTurn(float tubeRelDeg) {
-  float servoDeg = aossServoDegFromTubeDeg(tubeRelDeg);   // your existing mapping
+  float servoDeg = aossServoDegFromTubeDeg(tubeRelDeg);
   float within = fmodf(servoDeg, 360.0f);
   if (within < 0) within += 360.0f;
   uint16_t pos = degToCounts360(within);
@@ -305,7 +273,7 @@ static float servoFrameToPhysicalDeg(float servoDeg) {
 }
 
 static float aossPosCountsToDeg(uint16_t posCounts) {
-  // Same scaling as your AoA: 16384 counts = 360 deg
+  // AoA and AoSS use 16384 counts per revolution.
   return countsToDeg360(posCounts);
 }
 
@@ -342,12 +310,12 @@ static void aossSetZeroFromCurrent() {
   // => aossZeroOffsetDeg = aossServoDegNow - dir * tubeTrimmed * AoSSratio
   aossZeroOffsetDeg = aossServoDegNow - (float)aossDir * tubeTrimmed * AoSSratio;
 
-  Serial.print("AoSS zero set. aossZeroOffsetDeg=");
-  Serial.print(aossZeroOffsetDeg, 3);
-  Serial.print(" trimDeg=");
-  Serial.print(aossTrimDeg, 3);
-  Serial.print(" pitotTrimmed=");
-  Serial.println(tubeTrimmed, 3);
+  protocolLog.print("AoSS zero set. aossZeroOffsetDeg=");
+  protocolLog.print(aossZeroOffsetDeg, 3);
+  protocolLog.print(" trimDeg=");
+  protocolLog.print(aossTrimDeg, 3);
+  protocolLog.print(" pitotTrimmed=");
+  protocolLog.println(tubeTrimmed, 3);
 }
 
 static void canFlushRx() {
@@ -370,17 +338,17 @@ static void hitecWriteReg16(uint16_t arbId, uint8_t servoId, uint8_t regAddr, ui
 
 static void aoaServoMotorFree() {
   hitecWriteReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POWER_CONFIG, POWER_CONFIG_MOTOR_FREE);
-  Serial.println("AoA servo motor FREE command sent");
+  protocolLog.println("AoA servo motor FREE command sent");
 }
 
 static void aoaServoMotorEnable() {
   hitecWriteReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POWER_CONFIG, POWER_CONFIG_NORMAL);
-  Serial.println("AoA servo motor ENABLE command sent");
+  protocolLog.println("AoA servo motor ENABLE command sent");
 }
 
 static void aoaServoMotorHold() {
   hitecWriteReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POWER_CONFIG, POWER_CONFIG_MOTOR_HOLD);
-  Serial.println("AoA servo motor HOLD command sent");
+  protocolLog.println("AoA servo motor HOLD command sent");
 }
 
 static void hitecWriteReg16x2(uint16_t arbId, uint8_t servoId,
@@ -442,7 +410,7 @@ static float servoCountsToPhysicalDeg(uint16_t counts) {
   return servoFrameToPhysicalDeg(servoDeg);
 }
 
-// Command expects PHYSICAL degrees (your trim reference frame).
+// Command uses physical degrees in the trim reference frame.
 // The target is still exact, but the command sent to the servo is acceleration-
 // limited so the bench does not receive a sharp step input.
 static void aoaCanCommandServoDeg(float physicalDegTarget) {
@@ -613,8 +581,8 @@ static void aossEnableTurnModeAndReset() {
 static void aossPrintRunMode() {
   uint16_t v = 0;
   bool ok = hitecReadReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_RUN_MODE, v, 100);
-  Serial.print("AoSS RUN_MODE ok="); Serial.print(ok);
-  Serial.print(" value="); Serial.println(v);
+  protocolLog.print("AoSS RUN_MODE ok="); protocolLog.print(ok);
+  protocolLog.print(" value="); protocolLog.println(v);
 }
 
 static void ensureAossLimitOrder(float &mn, float &mx) {
@@ -756,7 +724,7 @@ void setAoAAxisEnabled(bool enabled) {
     // the servo's stored zero/center; it only stops the motor from holding.
     aoaSensorRelAngle = 0.0f;
     aoaServoMotorFree();
-    Serial.println("AoA axis DISABLED: servo motor free, no position commands");
+    protocolLog.println("AoA axis DISABLED: servo motor free, no position commands");
     return;
   }
 
@@ -770,10 +738,10 @@ void setAoAAxisEnabled(bool enabled) {
   aoaSensorPhysicalAngle = wrapSignedDeg(trimAoA);
   aoaCanCommandServoDeg(aoaSensorPhysicalAngle);
 
-  Serial.print("AoA axis ENABLED: returning to old zero/trim physical deg: ");
-  Serial.print(aoaSensorPhysicalAngle, 2);
-  Serial.print(" rel-to-trim deg: ");
-  Serial.println(aoaSensorRelAngle, 2);
+  protocolLog.print("AoA axis ENABLED: returning to old zero/trim physical deg: ");
+  protocolLog.print(aoaSensorPhysicalAngle, 2);
+  protocolLog.print(" rel-to-trim deg: ");
+  protocolLog.println(aoaSensorRelAngle, 2);
 }
 
 bool isAoAAxisEnabled() {
@@ -806,7 +774,23 @@ void aoaController() {
   aossCanReadbackUpdate();
   absAoA = aoaMeasuredRelDeg;
 }
-static void initControllersFrom(const InitParams &p) {
+static void logSensorStartup(uint8_t index, uint8_t rc) {
+  protocolLog.print(F("BEGIN")); protocolLog.print(index);
+  protocolLog.print(F(" rc=")); protocolLog.println(rc);
+  if (rc == 0) return;
+  const ThrustTorqueController* sensor = thrustTorqueControllers[index];
+  const PinSet pins = sensor->pins();
+  protocolLog.print(F("ERR|sensor_init prop=")); protocolLog.print(index + 1);
+  protocolLog.print(F(" thrust_tare_timeout=")); protocolLog.print(sensor->thrustTareTimeout());
+  protocolLog.print(F(" torque_tare_timeout=")); protocolLog.print(sensor->torqueTareTimeout());
+  protocolLog.print(F(" thrust_DAT/SCK=")); protocolLog.print(pins.thrDAT);
+  protocolLog.print('/'); protocolLog.print(pins.thrSCK);
+  protocolLog.print(F(" torque_DAT/SCK=")); protocolLog.print(pins.trqDAT);
+  protocolLog.print('/'); protocolLog.println(pins.trqSCK);
+}
+
+static bool initControllersFrom(const InitParams &p) {
+  twoProps = false;
   // 1) Cache everything for later use (props|2, status, etc.)
   firstTrqArmLength   = p.fTrqArm;
   firstThrArmLength   = p.fThrArm;
@@ -824,7 +808,8 @@ static void initControllersFrom(const InitParams &p) {
       firstThrArmLength, firstTrqArmLength,
       firstThrCalVal,    firstTrqCalVal
   );
-  Serial.print(F("BEGIN0 rc=")); Serial.println(rc0);
+  logSensorStartup(0, rc0);
+  if (rc0 != 0) return false;
 
   // 3) Decide whether to *start* second controller now
   bool wantSecondNow = (p.tSetup == 2);
@@ -837,21 +822,22 @@ static void initControllersFrom(const InitParams &p) {
         secondThrArmLength, secondTrqArmLength, secondThrCalVal, secondTrqCalVal);
 
 
-    Serial.print(F("BEGIN1 rc=")); Serial.println(rc1);
+    logSensorStartup(1, rc1);
+    if (rc1 != 0) { twoProps=false; return false; }
     twoProps = true;
   }
-  Serial.println(F("Ready!"));
+  // READY is emitted by the typed INIT command handler.
   // 4) RPM init(s)
   initRpmController(0);
   if (twoProps && thrustTorqueControllers[1]) initRpmController(1);
-  //Serial.println(F("Ready!"));
+  return true;
 }
 
 bool enableSecondProp() {
   if (twoProps) return true; // already on
 
   if (secondThrArmLength <= 0.0f || secondTrqArmLength <= 0.0f) {
-    Serial.println(F("ERR|second_arms_missing"));
+    protocolLog.println(F("ERR|second_arms_missing"));
     return false;
   }
 
@@ -868,8 +854,9 @@ bool enableSecondProp() {
   );
   thrtrqMutex.unlock();
 
+  logSensorStartup(1, rc);
   if (rc != 0) {
-    Serial.print(F("ERR|begin1_rc=")); Serial.println(rc);
+    protocolLog.print(F("ERR|begin1_rc=")); protocolLog.println(rc);
     thrtrqMutex.lock();
     delete thrustTorqueControllers[1];
     thrustTorqueControllers[1] = nullptr;
@@ -896,21 +883,6 @@ void disableSecondProp() {
   twoProps = false;
 }
 
-// motorIdx: 0 = first, 1 = second
-static int parsePwmTarget(const String& s, int motorIdx) {
-  long v = s.toInt();
-
-  int minUs = (motorIdx == 0) ? escMinUs1 : escMinUs2;
-  int maxUs = (motorIdx == 0) ? escMaxUs1 : escMaxUs2;
-  if (maxUs < minUs) { int t = minUs; minUs = maxUs; maxUs = t; }
-
-  long target = (v <= 100) ? (minUs + (v * (long)(maxUs - minUs)) / 100L) : v;
-
-  if (target < minUs) target = minUs;
-  if (target > maxUs) target = maxUs;
-  return (int)target;
-}
-
 static float clampf(float x, float lo, float hi) {
   if (x < lo) return lo;
   if (x > hi) return hi;
@@ -932,7 +904,8 @@ void setup() {
   aossEnableTurnModeAndReset();
   delay(50);
   
-  Serial.begin(115200); //Serial between UI
+  Serial.begin(115200); // StandLink binary USB link
+  standLink.enabled = true;
   Serial3.begin(115200); //Serial between Pitot' sensor
   Wire.begin(); //I2C to stepper controller
 
@@ -942,8 +915,8 @@ void setup() {
   aossZeroOffsetDeg = aossServoDegNow;   // "this is tube=0"
   aossSensorRelAngle = 0.0f;
 
-  Serial.print("AoSS boot zero assumed. aossZeroOffsetDeg=");
-  Serial.println(aossZeroOffsetDeg, 2);
+  protocolLog.print("AoSS boot zero assumed. aossZeroOffsetDeg=");
+  protocolLog.println(aossZeroOffsetDeg, 2);
 
   thrustTorqueControllers[0] = new ThrustTorqueController(0);
 
@@ -956,7 +929,7 @@ void setup() {
   thread4->onRun(aoaController); 
   thread4->setInterval(10); 
   thread5->onRun(assembleStream); 
-  thread5->setInterval(5); //changing this value changes the resolution of the readings, don't set it to 0! 5 default
+  thread5->setInterval(5); // Original scheduling interval; actual rate depends on sensor/bus latency.
   thread6->onRun(checkEmergency); 
   thread6->setInterval(10);
   thread7->onRun(escPwmController); 
@@ -977,24 +950,8 @@ void setup() {
   controller.add(thread8);
   controller.add(thread9);
 
-  while (input_complete == false && no_safety == false) {
-    digitalWrite(LED_BUILTIN, HIGH); 
-    delay(50);                      
-    digitalWrite(LED_BUILTIN, LOW);   
-    delay(50); 
-    String input = Serial.readStringUntil('\n');
-    String originalInput = input;
-    if (input.startsWith("init|")) {
-      InitParams p;
-      if (!parseInitPayload(input.substring(5), p)) {
-        // keep blinking, wait for a valid init
-        continue;
-        }
-      initControllersFrom(p);
-      input_complete = true;
-      cal_found = true;
-    }
-  }
+  // Initialization is a normal typed command; never block USB waiting for text.
+
 }
 
 void readPitot() {
@@ -1013,14 +970,28 @@ void readPitot() {
     got_pitot_readings = true;
 
     if (read_stream) {
-      Serial.println("Pitot: 0 0 0 0");
+      protocolLog.println("Pitot: 0 0 0 0");
     }
     return;
   }
 */
   
   // Try to read one line from Pitot
-  String pitot = Serial3.readStringUntil('\n'); 
+  static char pitotLine[256];
+  static size_t used=0;
+  static bool overflow=false;
+  unsigned budget=256;
+  bool complete=false;
+  while (budget-- && Serial3.available()>0) {
+    char c=char(Serial3.read());
+    if (c=='\n') { complete=true; break; }
+    if (used<sizeof(pitotLine)-1) pitotLine[used++]=c;
+    else overflow=true;
+  }
+  if (!complete) return;
+  pitotLine[used]='\0';
+  String pitot=overflow ? String("") : String(pitotLine);
+  used=0; overflow=false;
 
   int time     = pitot.indexOf(',');
   int date     = pitot.indexOf(',', time + 1);
@@ -1056,7 +1027,7 @@ void readPitot() {
   got_pitot_readings = true;
 
   if (read_stream) {
-    Serial.println("Pitot: " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(aoss_raw) + " " + String(static_pressure_raw));
+    printPitotLive("Pitot");
   }
 
   if (pitot_live_stream) {
@@ -1076,16 +1047,8 @@ void printPitotLive(const char* prefix) {
   valid          = pitot_data_valid;
   pitotMutex.unlock();
 
-  Serial.print(prefix);
-  Serial.print(valid ? "|OK|" : "|STALE|");
-  Serial.print("airspeed=");
-  Serial.print(airspeed, 3);
-  Serial.print("|aoa=");
-  Serial.print(aoa, 3);
-  Serial.print("|aoss=");
-  Serial.print(aoss, 3);
-  Serial.print("|staticPressure=");
-  Serial.println(staticPressure, 3);
+  (void)prefix;
+  standLink.send(standlink::Pitot{millis(),uint8_t(valid),airspeed,aoa,aoss,staticPressure});
 }
 
 // void readPitot() {
@@ -1116,603 +1079,11 @@ void printPitotLive(const char* prefix) {
 //   }
 //   got_pitot_readings = true;
 //   if (read_stream) {
-//     Serial.println("Pitot: " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(aoss_raw));
+//     protocolLog.println("Pitot: " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(aoss_raw));
 //   }
 // }
 
-void manageCommands() {
-  if (Serial.available() > 0) {
-    String command = Serial.readStringUntil('\n');
-    if (command.startsWith("home") && !no_safety && !emergency_state) {
-      forwardToStepper(command); 
-      unsigned long startTime = millis();
-      while(millis() - startTime < TIMEOUT_MS) {
-        checkEmergency();
-        if (!emergency_state) {
-          Wire.requestFrom(stepper_address, 1); 
-          delay(10); 
-          if (Wire.available()) {
-            int dataType = Wire.read();
-            if (dataType == 1) {
-              //Serial.println("homing done");
-              homing_done = true;
-              Serial.println("homing done");
-              break;
-            }
-          }
-        }
-        else {
-          break;
-        }
-      }
-    } else if (command.startsWith("j") && homing_done == true && !no_safety && !emergency_state) { //format of message j|X(steps)|Y(steps)|JogSpeedX|JogSpeedY
-      forwardToStepper(command); 
-      unsigned long startTime = millis();
-      while(millis() - startTime < TIMEOUT_MS) {
-        checkEmergency();
-        if (!emergency_state) {
-          Wire.requestFrom(stepper_address, 1); 
-          delay(10); 
-          if (Wire.available()) {
-            int dataType = Wire.read(); 
-            if (dataType == 2) {
-              Serial.println("jog done");
-              break;
-            } 
-            else if (dataType == 3) {
-              Serial.println("over axis limit");
-              break;
-            }
-            else if (dataType == 4) {
-              Serial.println("limit switch");
-              break;
-            }
-          }
-        }
-        else {
-          break;
-        }
-      }
-    } else if (command.startsWith("center") && homing_done == true && !no_safety && !emergency_state) {
-      forwardToStepper(command); 
-      unsigned long startTime = millis();
-      while(millis() - startTime < TIMEOUT_MS) {
-        checkEmergency();
-        if (!emergency_state) {
-          Wire.requestFrom(stepper_address, 1); 
-          delay(10); 
-          if (Wire.available()) {
-            int dataType = Wire.read(); 
-            if (dataType == 4) {
-              Serial.println("limit switch");
-              break;
-            }
-            else if (dataType == 5) {
-              Serial.println("centering done");
-              break;
-            }
-          }
-        } 
-        else {
-          break;
-        }
-      }
-    } else if (command.startsWith("l")) { //format of message l|MaxX(steps)|MaxY(steps)|MaxFeedSpeedX|MaxFeedSpeedY|FeedAccX|FeedAccY
-      forwardToStepper(command); 
-    } else if (command.startsWith("m") && homing_done == true && !no_safety && !emergency_state) {
-      measure_in_progress = true;
-      forwardToStepper(command); 
-      int limXSeparator = command.indexOf("|", 2);
-      if (limXSeparator == -1) return;
-      int limYSeparator = command.indexOf("|", limXSeparator + 1);
-      if (limYSeparator == -1) return;
-      String reqXStr = command.substring(2,limXSeparator);
-      String reqYStr = command.substring(limXSeparator + 1, limYSeparator);
-      reqX = reqXStr.toInt();
-      reqY = reqYStr.toInt();
-    } else if (command.startsWith("trimAoA")) {
-      float trimSeparator = command.indexOf("|", 2);
-      if (trimSeparator == -1) return;
-      String trimAoAStr = command.substring(trimSeparator + 1);
-      trimAoA = trimAoAStr.toFloat();
-      aoaCanCommandServoDeg((trimAoA - 10));
-      delay(500); 
-      aoaCanCommandServoDeg((trimAoA + 10));
-      delay(500); 
-      aoaSensorPhysicalAngle = aoaTargetPhysicalDegForAxisState();
-      aoaCanCommandServoDeg(aoaSensorPhysicalAngle);
-      Serial.print("trimAoA set: ");
-      Serial.println(trimAoA);
-    } else if (command.startsWith("AoAlim")) {
-      int limaoaSeparator = command.indexOf("|", 2);
-      if (limaoaSeparator == -1) return;
-      String limStr = command.substring(limaoaSeparator + 1);
-      limAoA = limStr.toInt();
-      Serial.print("limAoA set: ");
-      Serial.println(limAoA);
-    } else if (command.startsWith("AoAaxis")) {
-      int sep = command.indexOf("|", 2);
-      if (sep == -1) return;
-
-      String state = command.substring(sep + 1);
-      state.trim();
-      state.toLowerCase();
-
-      if (state == "1" || state == "on" || state == "true" || state == "enable" || state == "enabled") {
-        setAoAAxisEnabled(true);
-      } else if (state == "0" || state == "off" || state == "false" || state == "disable" || state == "disabled") {
-        setAoAAxisEnabled(false);
-      } else {
-        Serial.println("Invalid AoAaxis value. Use 1/on/enabled or 0/off/disabled.");
-        return;
-      }
-
-      Serial.print("AoA axis ");
-      Serial.println(isAoAAxisEnabled() ? "enabled" : "disabled (motor free)");
-    } //else if (command.startsWith("trimAoSS")) {
-      // int trimSeparator = command.indexOf("|", 2);
-      // if (trimSeparator == -1) return;
-      // String trimAoSSStr = command.substring(trimSeparator + 1);
-      // trimAoSS = trimAoSSStr.toInt();
-      // aossCanCommandServoRelDeg(trimAoSS);
-      // Serial.print("trimAoSS set: ");
-      // Serial.println(trimAoSS);
-      else if (command.startsWith("trimAoSS")) {
-      int trimSeparator = command.indexOf("|", 2);
-      if (trimSeparator == -1) return;
-      String trimStr = command.substring(trimSeparator + 1);
-
-      // Trim is a sensor offset (pitot AoSS bias), NOT a movement command.
-      aossTrimDeg = trimStr.toFloat();
-
-      Serial.print("trimAoSS|OK|");
-      Serial.println(aossTrimDeg, 3);
-    } else if (command.startsWith("moveAoSS|")) {
-      int pipe = command.indexOf('|');
-      float tubeCmd = command.substring(pipe + 1).toFloat();
-
-      // Optional: clamp to your tube limits if you want:
-      if (tubeCmd < aossMinTubeDeg) tubeCmd = aossMinTubeDeg;
-      if (tubeCmd > aossMaxTubeDeg) tubeCmd = aossMaxTubeDeg;
-
-      aossCanCommandServoRelDeg(tubeCmd);
-      aossSensorRelAngle = tubeCmd;
-
-      Serial.print("moveAoSS|OK|");
-      Serial.println(tubeCmd, 2);
-    } else if (command.startsWith("moveAoSSServoAbs|")) {
-      int pipe = command.indexOf('|');
-      float servoAbsDeg = command.substring(pipe + 1).toFloat();
-
-      // Convert servo->tube
-      float tubeCmd = aossTubeDegFromServoDeg(servoAbsDeg);
-
-      // Clamp tube physical limits
-      if (tubeCmd < aossMinTubeDeg) tubeCmd = aossMinTubeDeg;
-      if (tubeCmd > aossMaxTubeDeg) tubeCmd = aossMaxTubeDeg;
-
-      // Command by tube (safe)
-      aossCanCommandServoRelDeg(tubeCmd);
-      aossSensorRelAngle = tubeCmd;
-
-      Serial.print("moveAoSSServoAbs|OK|tube=");
-      Serial.print(tubeCmd, 2);
-      Serial.print("|servoReq=");
-      Serial.println(servoAbsDeg, 2);
-    } else if (command.startsWith("moveAoSSTubeAbs|")) {
-      int pipe = command.indexOf('|');
-      float tubeCmd = command.substring(pipe + 1).toFloat();
-
-      // clamp PHYSICAL tube limits
-      tubeCmd = clampf(tubeCmd, aossMinTubeDeg, aossMaxTubeDeg);
-
-      // command it (this should ultimately go through tube->servo using ratio)
-      aossCanCommandServoRelDeg(tubeCmd);
-      aossSensorRelAngle = tubeCmd;
-
-      Serial.print("moveAoSSTubeAbs|OK|tube=");
-      Serial.print(tubeCmd, 2);
-      Serial.print("|ratio=");
-      Serial.println(AoSSratio, 4);
-    } else if (command.startsWith("aossTest")) {
-      aossCanCommandServoRelDeg(-10.0f);
-      delay(500);
-      aossCanCommandServoRelDeg(0.0f);
-      Serial.println("AoSS CAN TURN test done");
-    } else if (command.startsWith("setRunModeTurn")) {
-      aossEnableTurnModeAndReset();
-      aossPrintRunMode();
-      Serial.println("AoSS TURN setup done (RUN_MODE=0, saved, reset).");
-    } else if (command.startsWith("setAoSSRatio|")) {
-      int pipe = command.indexOf('|');
-      float r = command.substring(pipe + 1).toFloat();
-
-      // choose sane bounds for your hardware
-      r = clampf(r, 0.01f, 1000.0f);
-
-      AoSSratio = r;
-
-      Serial.print("setAoSSRatio|OK|ratio=");
-      Serial.println(AoSSratio, 4);
-      aossCanCommandServoRelDeg(aossSensorRelAngle); 
-    } else if (command == "getAoSSRatio") {
-      Serial.print("getAoSSRatio|OK|ratio=");
-      Serial.println(AoSSratio, 4);
-    } else if (command.startsWith("setAoSSLimits|")) {
-      // format: setAoSSLimits|min|max
-      int p1 = command.indexOf('|');
-      int p2 = command.indexOf('|', p1 + 1);
-      if (p1 < 0 || p2 < 0) {
-        Serial.println("setAoSSLimits|ERR|format");
-      } else {
-        float mn = command.substring(p1 + 1, p2).toFloat();
-        float mx = command.substring(p2 + 1).toFloat();
-
-        ensureAossLimitOrder(mn, mx);
-
-        // optional sanity bounds to prevent nonsense:
-        // (choose something that cannot damage hardware)
-        mn = clampf(mn, -90.0f, 90.0f);
-        mx = clampf(mx, -90.0f, 90.0f);
-        ensureAossLimitOrder(mn, mx);
-
-        aossMinTubeDeg = mn;
-        aossMaxTubeDeg = mx;
-
-        // clamp current target to new limits + re-command
-        aossSensorRelAngle = clampf(aossSensorRelAngle, aossMinTubeDeg, aossMaxTubeDeg);
-        aossCanCommandServoRelDeg(aossSensorRelAngle);
-
-        Serial.print("setAoSSLimits|OK|min=");
-        Serial.print(aossMinTubeDeg, 2);
-        Serial.print("|max=");
-        Serial.println(aossMaxTubeDeg, 2);
-      }
-    } else if (command == "getAoSSLimits") {
-      Serial.print("getAoSSLimits|OK|min=");
-      Serial.print(aossMinTubeDeg, 2);
-      Serial.print("|max=");
-      Serial.println(aossMaxTubeDeg, 2);
-    } else if (command.startsWith("enableAoSS")) {
-      aoss_enabled = true;
-      Serial.println("AoSSenabled");
-    } else if (command.startsWith("disableAoSS")) {
-      aoss_enabled = false;
-      Serial.println("AoSSdisabled");
-    } else if (command.startsWith("readAoA")) {
-      uint16_t pos = 0;
-
-      // Read actual servo position over CAN
-      if (hitecReadReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POSITION, pos, 50)) {
-        float physDeg = servoCountsToPhysicalDeg(pos);                 // physical angle (deg)
-        float relDeg  = wrapSignedDeg(physDeg - (float)trimAoA);       // relative to trim (deg)
-
-        Serial.print("readAoA|");
-        Serial.print(pos);          // raw counts (useful for debugging)
-        Serial.print("|");
-        Serial.print(physDeg, 2);   // physical angle in deg
-        Serial.print("|");
-        Serial.print(relDeg, 2);    // physical relative-to-trim angle (0 at trim)
-        Serial.println();
-      } else {
-        Serial.println("readAoA|ERR");
-      }
-    } else if (command.startsWith("readAoSS")) {
-      // Force one immediate refresh (optional)
-      aossCanReadbackUpdate();
-
-      Serial.print("readAoSS|");
-      Serial.print(aossServoPosNow);
-      Serial.print("|");
-      Serial.print(aossTurnNow);
-      Serial.print("|");
-      Serial.print(aossServoDegNow, 2);
-      Serial.print("|");
-      Serial.print(aossTubeDegNow, 2);
-      Serial.println();
-
-    } else if (command.startsWith("zeroAoSS")) {
-      // User has aligned tube to true 0 using external measuring device.
-      // We declare current absolute servo position as tube=0 reference.
-      aossCanReadbackUpdate();
-      aossZeroOffsetDeg = aossServoDegNow;
-      aossSensorRelAngle = 0.0f;
-
-      Serial.print("zeroAoSS|OK|");
-      Serial.println(aossZeroOffsetDeg, 2);
-
-    } else if (command.startsWith("aossDir|")) {
-      int pipe = command.indexOf('|');
-      String v = command.substring(pipe + 1);
-      int d = v.toInt();
-      aossDir = (d < 0) ? -1 : +1;
-      Serial.print("aossDir|OK|");
-      Serial.println(aossDir);
-
-    } else if (command.startsWith("aossCal|")) {
-      // External calibration: you measure tube angle physically (deg) and tell MCU.
-      // We then solve: tubeDeg = dir*(servoDeg - zeroOffset)  => zeroOffset = servoDeg - dir*tubeDeg
-      int pipe = command.indexOf('|');
-      String v = command.substring(pipe + 1);
-      float tubeDegMeasured = v.toFloat();
-
-      aossCanReadbackUpdate();
-      aossZeroOffsetDeg = aossServoDegNow - (float)aossDir * tubeDegMeasured;
-
-      Serial.print("aossCal|OK|");
-      Serial.print(aossZeroOffsetDeg, 2);
-      Serial.print("|dir|");
-      Serial.println(aossDir);
-    } else if (command.startsWith("tare")) {
-      if (twoProps) {
-        thrustTorqueControllers[0]->tareAll();
-        thrustTorqueControllers[1]->tareAll();
-      }
-      else {
-        thrustTorqueControllers[0]->tareAll();
-      }
-      tare_done = true;
-      Serial.println("tare done");
-    } else if (command.startsWith("calFirstTorque")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        float knownMass = command.substring(bar + 1).toFloat();
-        Serial.println(knownMass);
-        if (knownMass > 0.0f && thrustTorqueControllers[0]) {
-          float firstTrqCalVal = thrustTorqueControllers[0]->calibrateTorque(knownMass);
-          Serial.println("CalVal: " + String(firstTrqCalVal));
-          cal_found = true;
-        }
-      }
-    } else if (command.startsWith("calSecondTorque")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        float knownMass = command.substring(bar + 1).toFloat();
-        Serial.println(knownMass);
-        if (knownMass > 0.0f && twoProps && thrustTorqueControllers[1]) {
-          float secondTrqCalVal = thrustTorqueControllers[1]->calibrateTorque(knownMass);
-          Serial.println("CalVal: " + String(secondTrqCalVal));
-          cal_found = true;
-        }
-      }
-    } else if (command.startsWith("calFirstThrust")) { 
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        float knownMass = command.substring(bar + 1).toFloat();
-        Serial.println(knownMass);
-        if (knownMass > 0.0f && thrustTorqueControllers[0]) {
-          float firstThrCalVal = thrustTorqueControllers[0]->calibrateThrust(knownMass);
-          Serial.println("CalVal: " + String(firstThrCalVal));
-          cal_found = true;
-        }
-      }
-   } else if (command.startsWith("calSecondThrust")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        float knownMass = command.substring(bar + 1).toFloat();
-        Serial.println(knownMass);
-        if (knownMass > 0.0f && twoProps && thrustTorqueControllers[1]) {
-          float secondThrCalVal = thrustTorqueControllers[1]->calibrateThrust(knownMass);
-          Serial.println("CalVal: " + String(secondThrCalVal));
-          cal_found = true;
-        }
-      }
-   } else if (command.startsWith("setFirstThrCalVal")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        firstThrCalVal = command.substring(bar + 1).toFloat();
-        if (firstThrCalVal != 0.0) {
-          thrustTorqueControllers[0]->setThrustCalibration(firstThrCalVal);
-        }
-      }
-    } else if (command.startsWith("setSecondThrCalVal")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        secondThrCalVal = command.substring(bar + 1).toFloat();
-        if (secondThrCalVal != 0.0 && twoProps && thrustTorqueControllers[1]) {
-          thrustTorqueControllers[1]->setThrustCalibration(secondThrCalVal);
-        }
-      }
-    } else if (command.startsWith("setFirstTrqCalVal")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        firstTrqCalVal = command.substring(bar + 1).toFloat();
-        if (firstTrqCalVal != 0.0) {
-          thrustTorqueControllers[0]->setTorqueCalibration(firstTrqCalVal);
-        }
-      }
-    } else if (command.startsWith("setSecondTrqCalVal")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        secondTrqCalVal = command.substring(bar + 1).toFloat();
-        if (secondTrqCalVal != 0.0 && twoProps && thrustTorqueControllers[1]) {
-          thrustTorqueControllers[1]->setTorqueCalibration(secondTrqCalVal);
-        }
-      }
-    } else if (command.startsWith("setFirstThrArmLength")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        firstThrArmLength = command.substring(bar + 1).toFloat();
-        if (thrustTorqueControllers[0]) {
-          thrustTorqueControllers[0]->setThrustArmLength(firstThrArmLength);
-        }
-      }
-    } else if (command.startsWith("setSecondThrArmLength")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        secondThrArmLength = command.substring(bar + 1).toFloat();
-        if (thrustTorqueControllers[1]) {
-          thrustTorqueControllers[1]->setThrustArmLength(secondThrArmLength);
-          Serial.println(secondThrArmLength);
-        }
-      }
-    } else if (command.startsWith("setFirstTrqArmLength")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        firstTrqArmLength = command.substring(bar + 1).toFloat();
-        if (thrustTorqueControllers[0]) {
-          thrustTorqueControllers[0]->setTorqueArmLength(firstTrqArmLength);
-        }
-      }
-    } else if (command.startsWith("setSecondTrqArmLength")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        secondTrqArmLength = command.substring(bar + 1).toFloat();
-        if (thrustTorqueControllers[1]) {
-          thrustTorqueControllers[1]->setTorqueArmLength(secondTrqArmLength);
-          Serial.println(secondTrqArmLength);
-        }
-      }
-    } else if (command.startsWith("readPitotLive")) {
-      // One-shot readout of the latest Pitot data. This command does not move the arms.
-      printPitotLive("readPitotLive");
-    } else if (command.startsWith("pitotLiveStart")) {
-      // Verification mode: keep reading Pitot data, stream it to the UI, and hold AoA/AoSS arms still.
-      pitot_live_mode = true;
-      pitot_live_stream = true;
-      Serial.println("pitotLiveStart|OK");
-    } else if (command.startsWith("pitotLiveStop")) {
-      // Leave verification mode and allow normal automatic AoA/AoSS tracking again.
-      pitot_live_stream = false;
-      pitot_live_mode = false;
-      Serial.println("pitotLiveStop|OK");
-    } else if (command.startsWith("pitotLiveHoldOn")) {
-      pitot_live_mode = true;
-      Serial.println("pitotLiveHoldOn|OK");
-    } else if (command.startsWith("pitotLiveHoldOff")) {
-      pitot_live_mode = false;
-      Serial.println("pitotLiveHoldOff|OK");
-    } else if (command.startsWith("streamStart")) {
-      read_stream = true;
-    } else if (command.startsWith("streamStop")) {
-      read_stream = false;
-    } else if (command.startsWith("ON")) {
-      read_stream_test = true;
-    } else if (command.startsWith("OFF")) {
-      read_stream_test = false;
-    } else if (command.startsWith("BeaconON")) {
-      beacon_on = true;
-    } else if (command.startsWith("BeaconOFF")) {
-      beacon_on = false;
-    } else if (command.startsWith("props")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        tandemSetup = command.substring(bar + 1).toInt();
-        if (tandemSetup == 1) {
-          disableSecondProp();
-        }
-        else if (tandemSetup == 2) {
-          enableSecondProp();
-        }
-      }
-    } else if (command.startsWith("status")) {
-      int n = twoProps ? 2 : 1;
-      for (int i = 0; i < n; ++i) {
-        Serial.print("PROP "); Serial.println(i);
-        Serial.print("  ThrArm="); Serial.println(thrustTorqueControllers[i]->getThrustArmLength(), 6);
-        Serial.print("  TrqArm="); Serial.println(thrustTorqueControllers[i]->getTorqueArmLength(), 6);
-        Serial.print("  ThrCF ="); Serial.println(thrustTorqueControllers[i]->getThrustCalibration(), 6);
-        Serial.print("  TrqCF ="); Serial.println(thrustTorqueControllers[i]->getTorqueCalibration(), 6);
-      }
-    } else if (command.startsWith("setRamp|")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        int ms = command.substring(bar + 1).toInt();
-        if (ms < 50)    ms = 50;
-        if (ms > 10000) ms = 10000;
-        escRampMs = ms;
-        Serial.print(F("OK|rampMs=")); 
-        Serial.println(escRampMs);
-      }
-    } else if (command.startsWith("startMotor|")) {
-      int bar1 = command.indexOf('|');
-      int bar2 = command.indexOf('|', bar1 + 1);
-      if (bar1 < 0 || bar2 < 0) {
-        Serial.println(F("ERR|bad_format"));
-      } else {
-        String v1s = command.substring(bar1 + 1, bar2); v1s.trim();
-        String v2s = command.substring(bar2 + 1);       v2s.trim();
-
-        int t1 = parsePwmTarget(v1s, 0);
-        escEnabled1 = true; escTarget1 = t1;
-        Serial.print(F("OK|first=")); Serial.println(t1);
-
-        if (twoProps && thrustTorqueControllers[1]) {
-          int t2 = parsePwmTarget(v2s, 1);
-          escEnabled2 = true; escTarget2 = t2;
-          Serial.print(F("OK|second=")); Serial.println(t2);
-        } else {
-          Serial.println(F("ERR|second_prop_not_enabled"));
-        }
-      }
-    } else if (command.startsWith("firstMotorTest|")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        int pwm = command.substring(bar + 1).toInt();
-        if (pwm < escMinUs1) pwm = escMinUs1;
-        if (pwm > escMaxUs1) pwm = escMaxUs1;
-
-        escEnabled1 = true;
-        escTarget1  = pwm;
-        escCurrent1 = pwm;           // jump immediately (bypass ramp)
-      }
-    } else if (command.startsWith("secondMotorTest|")) {
-      int bar = command.indexOf('|');
-      if (bar != -1) {
-        int pwm = command.substring(bar + 1).toInt();
-        if (pwm < escMinUs2) pwm = escMinUs2;
-        if (pwm > escMaxUs2) pwm = escMaxUs2;
-
-        if (twoProps && thrustTorqueControllers[1]) {
-          escEnabled2 = true;
-          escTarget2  = pwm;
-          escCurrent2 = pwm;         // jump immediately (bypass ramp)
-        } else {
-          Serial.println(F("ERR|second_prop_not_enabled"));
-        }
-      }
-    } else if (command.startsWith("setMin|")) {
-      // setMin|<motor>|<min>
-      int p1 = command.indexOf('|');
-      int p2 = command.indexOf('|', p1 + 1);
-      if (p1>0 && p2>p1) {
-        int m  = command.substring(p1+1, p2).toInt();
-        int mn = command.substring(p2+1).toInt();
-        if (mn < 500) mn = 500;
-        if (m == 1) { escMinUs1 = mn; if (escMaxUs1 < escMinUs1) escMaxUs1 = escMinUs1; }
-        else if (m == 2) { escMinUs2 = mn; if (escMaxUs2 < escMinUs2) escMaxUs2 = escMinUs2; }
-        else { Serial.println(F("ERR|min_bad_motor")); }
-      } else {
-        Serial.println(F("ERR|min_bad_format"));
-      }
-    } else if (command.startsWith("setMax|")) {
-      // setMax|<motor>|<max>
-      int p1 = command.indexOf('|');
-      int p2 = command.indexOf('|', p1 + 1);
-      if (p1>0 && p2>p1) {
-        int m  = command.substring(p1+1, p2).toInt();
-        int mx = command.substring(p2+1).toInt();
-        if (mx > 2500) mx = 2500;
-        if (m == 1) { escMaxUs1 = mx; if (escMaxUs1 < escMinUs1) escMinUs1 = escMaxUs1; }
-        else if (m == 2) { escMaxUs2 = mx; if (escMaxUs2 < escMinUs2) escMinUs2 = escMaxUs2; }
-        else { Serial.println(F("ERR|max_bad_motor")); }
-      } else {
-        Serial.println(F("ERR|max_bad_format"));
-      }
-    }else if (command.startsWith("stop")) {
-      escHardStopBoth();
-      Serial.println(F("OK|stopping"));
-    } else if (command.startsWith("init")) {
-      InitParams p;
-      if (!parseInitPayload(command.substring(5), p)) {
-        Serial.println(F("ERR|init_bad_field_count"));
-      } else {
-        initControllersFrom(p);
-        cal_found = true;
-      }
-    }
-  }
-}
+#include "StandCommands.h"
 
 void assembleStream() {
   if (measure_in_progress == true) {
@@ -1734,61 +1105,32 @@ void assembleStream() {
       secondRpmData = updateRpm(1);
     }
 
-    Wire.requestFrom(stepper_address, 10); 
-    delay(10); 
-    String receivedPos;
-    while (Wire.available()) {
-      char c = Wire.read();
-      if (isPrintable(c)) {
-        receivedPos += c;
-      }
+    // I2C position reply is the stepper's existing "X,Y " format (separate bus).
+    Wire.requestFrom(stepper_address, 32);
+    char position[33]={}; size_t count=0;
+    while (Wire.available() && count<sizeof(position)-1) position[count++]=char(Wire.read());
+    if (count && (uint8_t(position[0])==4 || uint8_t(position[0])==3)) {
+      measure_in_progress=false;
+      sendProtocolEvent(uint8_t(position[0])==4 ? standlink::LIMIT_SWITCH : standlink::AXIS_LIMIT, axisRequestSeq, axisRequestId);
+      axisRequestId=0;
+      return;
     }
-    // Process the received string only if it's not empty and has changed since the last read
-    static String lastReceived = "";  // Static variable to store the last received string
-    if (receivedPos != "" && receivedPos != lastReceived) {
-      lastReceived = receivedPos;  // Update last received data
-
-      int spaceIndex = receivedPos.indexOf(' ');
-      while (spaceIndex != -1) {
-        String pair = receivedPos.substring(0, spaceIndex);
-        int commaIndex = pair.indexOf(',');
-        if (commaIndex != -1) {
-          String XString = pair.substring(0, commaIndex);
-          String YString = pair.substring(commaIndex + 1);
-          X_pos = XString.toInt();
-          Y_pos = YString.toInt();
-        }
-        receivedPos = receivedPos.substring(spaceIndex + 1); 
-        spaceIndex = receivedPos.indexOf(' '); 
-
-        // Print always 13 fields: X Y Thr1 Trq1 RPM1 Airspd AoA AoA_abs Aoss AoSS_abs Thr2 Trq2 RPM2
-        Serial.print("Measurements: ");
-        Serial.print(X_pos);              Serial.print(' ');
-        Serial.print(Y_pos);              Serial.print(' ');
-        Serial.print(firstThrustData);    Serial.print(' ');
-        Serial.print(firstTorqueData);    Serial.print(' ');
-        Serial.print(firstRpmData);       Serial.print(' ');
-        Serial.print(airspeed_raw);       Serial.print(' ');
-        Serial.print(aoa_raw);            Serial.print(' ');
-        Serial.print(absAoA);             Serial.print(' ');
-        Serial.print(aoss_raw);           Serial.print(' ');
-        Serial.print(absAoSS);            Serial.print(' ');
-        Serial.print(secondThrustData);   Serial.print(' ');
-        Serial.print(secondTorqueData);   Serial.print(' ');
-        Serial.println(secondRpmData);
-
-        if (reqX == X_pos && reqY == Y_pos) {
-          //Serial.println("in position");
-          measure_in_progress = false;
-          break;
-        }
-      }
+    long x=0,y=0; char end=0;
+    if (sscanf(position,"%ld,%ld%c",&x,&y,&end)!=3 || end!=' ') return;
+    X_pos=x; Y_pos=y;
+    standLink.send(standlink::Measurements{millis(),int32_t(X_pos),int32_t(Y_pos),
+      firstThrustData,firstTorqueData,firstRpmData,airspeed_raw,aoa_raw,absAoA,
+      aoss_raw,absAoSS,secondThrustData,secondTorqueData,secondRpmData});
+    if (reqX==X_pos && reqY==Y_pos) {
+      measure_in_progress=false;
+      sendProtocolEvent(standlink::MOVE_DONE,axisRequestSeq,axisRequestId,X_pos,Y_pos);
+      axisRequestId=0;
     }
   }
 }
 
 void testReadThrTrq() {
-  if (read_stream_test) {
+  if (input_complete && read_stream_test) {
     if (twoProps && thrustTorqueControllers[1]) {
       float data[2];
       thrustTorqueControllers[0]->getThrust(data);
@@ -1805,17 +1147,9 @@ void testReadThrTrq() {
       float secondTorqueData = data[1];
       float firstRPM = updateRpm(0);
       float secondRPM = updateRpm(1);
-      Serial.print("LC test: ");
-      Serial.print(firstThrustData);     Serial.print(' ');
-      Serial.print(firstRawThrustData);  Serial.print(' ');
-      Serial.print(firstTorqueData);     Serial.print(' ');
-      Serial.print(firstRawTorqueData);  Serial.print(' ');
-      Serial.print(firstRPM);            Serial.print(' ');
-      Serial.print(secondThrustData);    Serial.print(' ');
-      Serial.print(secondRawThrustData); Serial.print(' ');
-      Serial.print(secondTorqueData);    Serial.print(' ');
-      Serial.print(secondRawTorqueData); Serial.print(' ');
-      Serial.println(secondRPM);
+      standLink.send(standlink::LcTest{millis(),firstThrustData,firstRawThrustData,
+        firstTorqueData,firstRawTorqueData,firstRPM,secondThrustData,secondRawThrustData,
+        secondTorqueData,secondRawTorqueData,secondRPM});
     } else {
       float data[2];
       thrustTorqueControllers[0]->getThrust(data);
@@ -1830,17 +1164,9 @@ void testReadThrTrq() {
       float secondTorqueData = 0;
       float firstRPM = updateRpm(0);
       float secondRPM = 0;
-      Serial.print("LC test: ");
-      Serial.print(firstThrustData);     Serial.print(' ');
-      Serial.print(firstRawThrustData);  Serial.print(' ');
-      Serial.print(firstTorqueData);     Serial.print(' ');
-      Serial.print(firstRawTorqueData);  Serial.print(' ');
-      Serial.print(firstRPM);            Serial.print(' ');
-      Serial.print(secondThrustData);    Serial.print(' ');
-      Serial.print(secondRawThrustData); Serial.print(' ');
-      Serial.print(secondTorqueData);    Serial.print(' ');
-      Serial.print(secondRawTorqueData); Serial.print(' ');
-      Serial.println(secondRPM);
+      standLink.send(standlink::LcTest{millis(),firstThrustData,firstRawThrustData,
+        firstTorqueData,firstRawTorqueData,firstRPM,secondThrustData,secondRawThrustData,
+        secondTorqueData,secondRawTorqueData,secondRPM});
     }
   }
 }
@@ -1854,12 +1180,6 @@ void beaconController() {
   }
 }
 
-void forwardToStepper(String data) {
-  Wire.beginTransmission(stepper_address); 
-  Wire.write(data.c_str(), data.length()); 
-  delay(10);
-  Wire.endTransmission(); 
-}
 
 void adjustSensorAoAPosition(float aoa, float airspeed) {
   static uint32_t lastAdjustMs = 0;
@@ -1942,14 +1262,14 @@ void adjustSensorAoSSPosition(float aoss, float airspeed) {
 //     if (aossSensorPhysicalAngle >= limMinAoSS) {
 //       aossSensorPhysicalAngle = limMinAoSS;
 //     }
-//     //Serial.println(aossSensorPhysicalAngle);
+//     //protocolLog.println(aossSensorPhysicalAngle);
 //     aossServo.write(aossSensorPhysicalAngle);
 //   } if (aoss < minAoSS + adjustmentStepAoSS && aossSensorPhysicalAngle > limMaxAoSS) {
 //       aossSensorPhysicalAngle -= adjustmentStepAoSS;
 //       if (aossSensorPhysicalAngle <= limMaxAoSS) {
 //         aossSensorPhysicalAngle = limMaxAoSS;
 //       }
-//       //Serial.println(aossSensorPhysicalAngle);
+//       //protocolLog.println(aossSensorPhysicalAngle);
 //       aossServo.write(aossSensorPhysicalAngle);
 //   } if (aoss == 0.00) {
 //       aossSensorPhysicalAngle = trimAoSS;
@@ -2064,11 +1384,11 @@ void checkEmergency() {
   // Announce on changes only (simple debounce)
   static int lastE = -1, lastS = -1;
   if ((int)emergencyPressed != lastE) {
-    Serial.println(emergencyPressed ? "Emergency!" : "Emergency cleared");
+    sendProtocolEvent(emergencyPressed ? standlink::EMERGENCY : standlink::EMERGENCY_CLEARED);
     lastE = (int)emergencyPressed;
   }
   if ((int)safetyDisconnected != lastS) {
-    Serial.println(safetyDisconnected ? "Safety switch disconnected!" : "Safety connected");
+    sendProtocolEvent(safetyDisconnected ? standlink::SAFETY_OPEN : standlink::SAFETY_CLOSED);
     lastS = (int)safetyDisconnected;
   }
 
@@ -2087,7 +1407,7 @@ void checkEmergency() {
     escTarget1  = escMinUs1; escTarget2 = escMinUs2;
     esc1.writeMicroseconds(escMinUs1);
     esc2.writeMicroseconds(escMinUs2);
-    Serial.println("Emergency!");
+    // Safety state is reported on transitions, not on every scheduler tick.
     digitalWrite(emergency_stepper, HIGH);
   } else {
     digitalWrite(emergency_stepper, LOW);
@@ -2096,4 +1416,6 @@ void checkEmergency() {
 
 void loop() {
   controller.run();
+  serviceAxisOperation();
+  sendHeartbeat();
 }

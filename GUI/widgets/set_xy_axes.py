@@ -3,6 +3,7 @@ from PyQt5.QtCore import pyqtSignal, QTimer
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinBox, QPushButton, QRadioButton, QGroupBox, QHBoxLayout, QCheckBox
 import serial
 import app_globals
+from i18n import bind_text
 
 class SetXYAxes(QWidget):
     sendData = pyqtSignal(str)
@@ -12,12 +13,12 @@ class SetXYAxes(QWidget):
         super().__init__()
         self.shared_data = shared_data
         layout1 = QVBoxLayout(); self.setLayout(layout1)
-        self.setWindowTitle("Telgede sättimine")
+        bind_text(self, 'Axis parameters', property_name="windowTitle")
         
-        rot_group = QGroupBox("Pöörlemissuund")
+        rot_group = bind_text(QGroupBox(), 'Rotation direction', property_name='title')
         rot_layout = QHBoxLayout(rot_group)
-        self.rot_cw  = QRadioButton("CW (päripäeva)")
-        self.rot_ccw = QRadioButton("CCW (vastupäeva)")
+        self.rot_cw  = bind_text(QRadioButton(), 'CW (clockwise)')
+        self.rot_ccw = bind_text(QRadioButton(), 'CCW (counterclockwise)')
         rot_layout.addWidget(self.rot_cw)
         rot_layout.addWidget(self.rot_ccw)
         layout1.addWidget(rot_group)
@@ -33,14 +34,14 @@ class SetXYAxes(QWidget):
         self.rot_cw.toggled.connect(_on_rotation_changed)
         self.rot_ccw.toggled.connect(_on_rotation_changed)
         
-        self.aoss_enabled_button = QCheckBox("AoSS telg aktiivne", self)
+        self.aoss_enabled_button = bind_text(QCheckBox(self), 'Enable AoSS axis')
         try:
             self.aoss_enabled_button.setChecked(bool(self.shared_data.aoss_enabled))
         except Exception:
             self.aoss_enabled_button.setChecked(False)
         layout1.addWidget(self.aoss_enabled_button)
         
-        self.label33 = QLabel("Turvaala suurus (% propelleri raadiusest)")
+        self.label33 = bind_text(QLabel(), 'Safety margin (% of propeller radius)')
         layout1.addWidget(self.label33)
         
         self.safety_o_prop = QSpinBox()
@@ -50,7 +51,7 @@ class SetXYAxes(QWidget):
         self.safety_o_prop.setValue(self.shared_data.safety_over_prop)
         layout1.addWidget(self.safety_o_prop)
         
-        self.label34 = QLabel("Mõõtmise resolutsioon (mm)")
+        self.label34 = bind_text(QLabel(), 'Measurement resolution (mm)')
         layout1.addWidget(self.label34)
         
         self.x_delta = QSpinBox()
@@ -60,7 +61,7 @@ class SetXYAxes(QWidget):
         self.x_delta.setValue(self.shared_data.x_delta)
         layout1.addWidget(self.x_delta)
         
-        self.label35 = QLabel("Maksimaalne mõõtmiste arv")
+        self.label35 = bind_text(QLabel(), 'Maximum number of measurements')
         layout1.addWidget(self.label35)
         
         self.max_number_of_samples = QSpinBox()
@@ -70,7 +71,7 @@ class SetXYAxes(QWidget):
         self.max_number_of_samples.setValue(self.shared_data.max_number_of_samples)
         layout1.addWidget(self.max_number_of_samples)
         
-        self.label30 = QLabel("Stepperite ülekandearvu (sammu/mm)")
+        self.label30 = bind_text(QLabel(), 'Stepper drive ratio (steps/mm)')
         layout1.addWidget(self.label30)
         
         self.ratio = QDoubleSpinBox()
@@ -80,7 +81,7 @@ class SetXYAxes(QWidget):
         self.ratio.setValue(self.shared_data.ratio)
         layout1.addWidget(self.ratio)
         
-        self.label36 = QLabel("X-teljes mootori tsentri koordinaat (max käik) (mm)")
+        self.label36 = bind_text(QLabel(), 'X-axis motor center (maximum travel) (mm)')
         layout1.addWidget(self.label36)
         
         self.x_center = QDoubleSpinBox()
@@ -90,7 +91,7 @@ class SetXYAxes(QWidget):
         self.x_center.setValue(self.shared_data.x_center)
         layout1.addWidget(self.x_center)
         
-        self.label37 = QLabel("Y-telje maksimaalne käik (mm)" )
+        self.label37 = bind_text(QLabel(), 'Y-axis maximum travel (mm)')
         layout1.addWidget(self.label37)
         
         self.y_max = QSpinBox()
@@ -100,7 +101,7 @@ class SetXYAxes(QWidget):
         self.y_max.setValue(self.shared_data.y_max)
         layout1.addWidget(self.y_max)
         
-        self.label38 = QLabel("X-telje maksimaalne kiirus (sammu/s)" )
+        self.label38 = bind_text(QLabel(), 'X-axis maximum speed (steps/s)')
         layout1.addWidget(self.label38)
         
         self.x_max_speed = QSpinBox()
@@ -110,7 +111,7 @@ class SetXYAxes(QWidget):
         self.x_max_speed.setValue(self.shared_data.x_max_speed)
         layout1.addWidget(self.x_max_speed)
         
-        self.label39 = QLabel("Y-telje maksimaalne kiirus (sammu/s)" )
+        self.label39 = bind_text(QLabel(), 'Y-axis maximum speed (steps/s)')
         layout1.addWidget(self.label39)
         
         self.y_max_speed = QSpinBox()
@@ -120,7 +121,7 @@ class SetXYAxes(QWidget):
         self.y_max_speed.setValue(self.shared_data.y_max_speed)
         layout1.addWidget(self.y_max_speed)
         
-        self.label40 = QLabel("X-telje maksimaalne kiirendus (sammu/s/s)" )
+        self.label40 = bind_text(QLabel(), 'X-axis maximum acceleration (steps/s/s)')
         layout1.addWidget(self.label40)
         
         self.x_max_accel = QSpinBox()
@@ -130,7 +131,7 @@ class SetXYAxes(QWidget):
         self.x_max_accel.setValue(self.shared_data.x_max_accel)
         layout1.addWidget(self.x_max_accel)
         
-        self.label41 = QLabel("Y-telje maksimaalne kiirendus (sammu/s/s)" )
+        self.label41 = bind_text(QLabel(), 'Y-axis maximum acceleration (steps/s/s)')
         layout1.addWidget(self.label41)
         
         self.y_max_accel = QSpinBox()
@@ -140,7 +141,7 @@ class SetXYAxes(QWidget):
         self.y_max_accel.setValue(self.shared_data.y_max_accel)
         layout1.addWidget(self.y_max_accel)
         
-        self.confirm_axis_button = QPushButton("Kinnita telgede parameetrid", self)
+        self.confirm_axis_button = bind_text(QPushButton(self), 'Apply axis parameters')
         self.confirm_axis_button.clicked.connect(self.confirm_axis_changes)
         self.confirm_axis_button.setEnabled(False)
         layout1.addWidget(self.confirm_axis_button)
@@ -199,21 +200,22 @@ class SetXYAxes(QWidget):
             self.confirm_axis_button.setStyleSheet("background-color: None; color: None;")
             if app_globals.window.tandem_setup:
                 app_globals.window.file.setEnabled(False)
+                app_globals.window.homing.setEnabled(True)
             else:
                 app_globals.window.file.setEnabled(True)
+                app_globals.window.homing.setEnabled(app_globals.window.fileSelected)
             QTimer.singleShot(1000, self.close)
             app_globals.window.aoa_aoss_action.setEnabled(True)
             app_globals.window.calibrate_first_loadcells_action.setEnabled(True)
-            if app_globals.window.tandem_setup == True:
-                app_globals.window.calibrate_second_loadcells_action.setEnabled(True)
-                app_globals.window.rpm_second_controller_action.setEnabled(True)
+            app_globals.window.calibrate_second_loadcells_action.setEnabled(app_globals.window.tandem_setup)
+            app_globals.window.rpm_second_controller_action.setEnabled(app_globals.window.tandem_setup)
             app_globals.window.rpm_first_controller_action.setEnabled(True)
             app_globals.window.map_action.setEnabled(True)
             app_globals.window.clear_plot_action.setEnabled(True)
             app_globals.window.save_plot_action.setEnabled(True)
             QTimer.singleShot(1000, self.close)
             app_globals.window.xy_axes.setStyleSheet("background-color: green; color: white;")
-            app_globals.window.xy_axes.setText("Säti teljed ✓")
+            bind_text(app_globals.window.xy_axes, 'Axis settings ✓')
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
             

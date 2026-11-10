@@ -1,0 +1,925 @@
+{
+  "version": 1,
+  "messages": [
+    {
+      "id": 1,
+      "name": "HELLO",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "version",
+          "type": "u16"
+        },
+        {
+          "name": "schema_hash",
+          "type": "u32"
+        }
+      ],
+      "description": "Negotiate protocol version and schema before sending commands. Repeated HELLO is read-only; it never starts or resumes hardware."
+    },
+    {
+      "id": 2,
+      "name": "HELLO_REPLY",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "version",
+          "type": "u16"
+        },
+        {
+          "name": "schema_hash",
+          "type": "u32"
+        },
+        {
+          "name": "uptime_ms",
+          "type": "u32"
+        }
+      ],
+      "description": "Firmware protocol identity and uptime; host must match version and schema."
+    },
+    {
+      "id": 3,
+      "name": "ACK",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "request_seq",
+          "type": "u8"
+        },
+        {
+          "name": "request_id",
+          "type": "u8"
+        },
+        {
+          "name": "result",
+          "type": "u8"
+        }
+      ],
+      "description": "Correlated command result. ACCEPTED acknowledges dispatch, not completion of an asynchronous axis movement."
+    },
+    {
+      "id": 4,
+      "name": "EVENT",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "code",
+          "type": "u8"
+        },
+        {
+          "name": "request_seq",
+          "type": "u8"
+        },
+        {
+          "name": "request_id",
+          "type": "u8"
+        },
+        {
+          "name": "x_steps",
+          "type": "i32"
+        },
+        {
+          "name": "y_steps",
+          "type": "i32"
+        }
+      ],
+      "description": "Operation completion or safety transition; request_id=0 denotes an unsolicited event. MOVE_DONE includes final step coordinates; otherwise coordinates are zero."
+    },
+    {
+      "id": 5,
+      "name": "STATUS_TEXT",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "text",
+          "type": "bytes"
+        }
+      ],
+      "description": "UTF-8 diagnostic text, 0\u2013255 bytes, without NUL terminator. Informational only; never interpreted as commands or control events."
+    },
+    {
+      "id": 6,
+      "name": "HEARTBEAT",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "uptime_ms",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u16"
+        },
+        {
+          "name": "crc_errors",
+          "type": "u32"
+        },
+        {
+          "name": "sequence_gaps",
+          "type": "u32"
+        },
+        {
+          "name": "duplicates",
+          "type": "u32"
+        },
+        {
+          "name": "tx_errors",
+          "type": "u32"
+        }
+      ],
+      "description": "Periodic link and controller health (about 1 Hz). Flags: bit0 initialized, bit1 homed, bit2 emergency, bit3 safety open, bit4 axis busy. No automatic resume."
+    },
+    {
+      "id": 10,
+      "name": "MEASUREMENTS",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "uptime_ms",
+          "type": "u32"
+        },
+        {
+          "name": "x_steps",
+          "type": "i32"
+        },
+        {
+          "name": "y_steps",
+          "type": "i32"
+        },
+        {
+          "name": "thrust1_mN",
+          "type": "f32"
+        },
+        {
+          "name": "torque1_Nmm",
+          "type": "f32"
+        },
+        {
+          "name": "rpm1",
+          "type": "f32"
+        },
+        {
+          "name": "airspeed_mps",
+          "type": "f32"
+        },
+        {
+          "name": "aoa_raw_deg",
+          "type": "f32"
+        },
+        {
+          "name": "aoa_abs_deg",
+          "type": "f32"
+        },
+        {
+          "name": "aoss_raw_deg",
+          "type": "f32"
+        },
+        {
+          "name": "aoss_abs_deg",
+          "type": "f32"
+        },
+        {
+          "name": "thrust2_mN",
+          "type": "f32"
+        },
+        {
+          "name": "torque2_Nmm",
+          "type": "f32"
+        },
+        {
+          "name": "rpm2",
+          "type": "f32"
+        }
+      ],
+      "description": "Timestamped sample assembled by the controller during a measurement move; second-stand values zero in single-prop mode. Timestamp is assembly time, not synchronized sensor acquisition time."
+    },
+    {
+      "id": 11,
+      "name": "LC_TEST",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "uptime_ms",
+          "type": "u32"
+        },
+        {
+          "name": "thrust1_mN",
+          "type": "f32"
+        },
+        {
+          "name": "thrust1_g",
+          "type": "f32"
+        },
+        {
+          "name": "torque1_Nmm",
+          "type": "f32"
+        },
+        {
+          "name": "torque1_g",
+          "type": "f32"
+        },
+        {
+          "name": "rpm1",
+          "type": "f32"
+        },
+        {
+          "name": "thrust2_mN",
+          "type": "f32"
+        },
+        {
+          "name": "thrust2_g",
+          "type": "f32"
+        },
+        {
+          "name": "torque2_Nmm",
+          "type": "f32"
+        },
+        {
+          "name": "torque2_g",
+          "type": "f32"
+        },
+        {
+          "name": "rpm2",
+          "type": "f32"
+        }
+      ],
+      "description": "Load-cell/motor test stream, nominally 10 Hz; corrected forces and calibrated mass readings."
+    },
+    {
+      "id": 12,
+      "name": "CAL_VALUE",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "request_seq",
+          "type": "u8"
+        },
+        {
+          "name": "request_id",
+          "type": "u8"
+        },
+        {
+          "name": "factor",
+          "type": "f32"
+        }
+      ],
+      "description": "Calibration factor associated with the CALIBRATE request."
+    },
+    {
+      "id": 13,
+      "name": "AOA_STATE",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "position",
+          "type": "u16"
+        },
+        {
+          "name": "physical_deg",
+          "type": "f32"
+        },
+        {
+          "name": "relative_deg",
+          "type": "f32"
+        }
+      ],
+      "description": "AoA CAN readback: encoder counts, physical and trim-relative degrees."
+    },
+    {
+      "id": 14,
+      "name": "AOSS_STATE",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "position",
+          "type": "u16"
+        },
+        {
+          "name": "turns",
+          "type": "i32"
+        },
+        {
+          "name": "servo_deg",
+          "type": "f32"
+        },
+        {
+          "name": "tube_deg",
+          "type": "f32"
+        }
+      ],
+      "description": "AoSS CAN readback: encoder counts, turn counter, servo and tube degrees."
+    },
+    {
+      "id": 15,
+      "name": "PITOT",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "uptime_ms",
+          "type": "u32"
+        },
+        {
+          "name": "valid",
+          "type": "u8"
+        },
+        {
+          "name": "airspeed_mps",
+          "type": "f32"
+        },
+        {
+          "name": "aoa_deg",
+          "type": "f32"
+        },
+        {
+          "name": "aoss_deg",
+          "type": "f32"
+        },
+        {
+          "name": "static_pressure",
+          "type": "f32"
+        }
+      ],
+      "description": "Latest Pitot values. valid=0 means stale/invalid input; static pressure retains the sensor native units."
+    },
+    {
+      "id": 16,
+      "name": "AOSS_CONFIG",
+      "direction": "device",
+      "fields": [
+        {
+          "name": "ratio",
+          "type": "f32"
+        },
+        {
+          "name": "min_deg",
+          "type": "f32"
+        },
+        {
+          "name": "max_deg",
+          "type": "f32"
+        }
+      ],
+      "description": "Current AoSS transmission ratio and tube limits."
+    },
+    {
+      "id": 32,
+      "name": "INIT",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "trq_arm1_mm",
+          "type": "f32"
+        },
+        {
+          "name": "thrust_ratio1",
+          "type": "f32"
+        },
+        {
+          "name": "trq_cal1",
+          "type": "f32"
+        },
+        {
+          "name": "thr_cal1",
+          "type": "f32"
+        },
+        {
+          "name": "trq_arm2_mm",
+          "type": "f32"
+        },
+        {
+          "name": "thrust_ratio2",
+          "type": "f32"
+        },
+        {
+          "name": "trq_cal2",
+          "type": "f32"
+        },
+        {
+          "name": "thr_cal2",
+          "type": "f32"
+        },
+        {
+          "name": "prop_count",
+          "type": "u8"
+        }
+      ],
+      "description": "Initialize load-cell and RPM controllers. prop_count=1 or 2. READY event follows success; calibration factors and thrust ratios must be nonzero."
+    },
+    {
+      "id": 33,
+      "name": "AXIS_LIMITS",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "max_x",
+          "type": "i32"
+        },
+        {
+          "name": "max_y",
+          "type": "i32"
+        },
+        {
+          "name": "speed_x",
+          "type": "u32"
+        },
+        {
+          "name": "speed_y",
+          "type": "u32"
+        },
+        {
+          "name": "accel_x",
+          "type": "u32"
+        },
+        {
+          "name": "accel_y",
+          "type": "u32"
+        }
+      ],
+      "description": "Configure positive absolute axis limits (steps), speeds (steps/s), accelerations (steps/s\u00b2)."
+    },
+    {
+      "id": 34,
+      "name": "HOME",
+      "direction": "host",
+      "fields": [],
+      "description": "Home axes asynchronously; HOMED event on success."
+    },
+    {
+      "id": 35,
+      "name": "JOG",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "x",
+          "type": "i32"
+        },
+        {
+          "name": "y",
+          "type": "i32"
+        },
+        {
+          "name": "speed_x",
+          "type": "u32"
+        },
+        {
+          "name": "speed_y",
+          "type": "u32"
+        }
+      ],
+      "description": "Move to absolute step coordinates; JOG_DONE event on success."
+    },
+    {
+      "id": 36,
+      "name": "MEASURE_MOVE",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "x",
+          "type": "i32"
+        },
+        {
+          "name": "y",
+          "type": "i32"
+        },
+        {
+          "name": "speed_x",
+          "type": "u32"
+        },
+        {
+          "name": "speed_y",
+          "type": "u32"
+        }
+      ],
+      "description": "Move while streaming measurements; MOVE_DONE event after the final sample."
+    },
+    {
+      "id": 37,
+      "name": "CENTER",
+      "direction": "host",
+      "fields": [],
+      "description": "Move to the stepper configured center; CENTER_DONE event."
+    },
+    {
+      "id": 38,
+      "name": "TARE",
+      "direction": "host",
+      "fields": [],
+      "description": "Tare active load cells; TARE_DONE event."
+    },
+    {
+      "id": 39,
+      "name": "START_MOTORS",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "pwm1_us",
+          "type": "u16"
+        },
+        {
+          "name": "pwm2_us",
+          "type": "u16"
+        }
+      ],
+      "description": "Set ESC targets in microseconds, bounded by configured min/max. Second value ignored in single-prop mode; no percentage encoding."
+    },
+    {
+      "id": 40,
+      "name": "STOP",
+      "direction": "host",
+      "fields": [],
+      "description": "Immediately set both ESCs to minimum. Does not abort the independent stepper controller."
+    },
+    {
+      "id": 41,
+      "name": "SET_MIN",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "motor",
+          "type": "u8"
+        },
+        {
+          "name": "pwm_us",
+          "type": "u16"
+        }
+      ],
+      "description": "Set ESC minimum; motor=1 or 2, pulse 500\u20132500 us, cannot exceed maximum."
+    },
+    {
+      "id": 42,
+      "name": "SET_MAX",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "motor",
+          "type": "u8"
+        },
+        {
+          "name": "pwm_us",
+          "type": "u16"
+        }
+      ],
+      "description": "Set ESC maximum; motor=1 or 2, pulse 500\u20132500 us, cannot be below minimum."
+    },
+    {
+      "id": 43,
+      "name": "SET_RAMP",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "milliseconds",
+          "type": "u16"
+        }
+      ],
+      "description": "ESC ramp interval, 50\u201310000 ms."
+    },
+    {
+      "id": 44,
+      "name": "TEST_FIRST",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "pwm_us",
+          "type": "u16"
+        }
+      ],
+      "description": "Immediate first ESC test target, bounded by configured limits."
+    },
+    {
+      "id": 45,
+      "name": "TEST_SECOND",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "pwm_us",
+          "type": "u16"
+        }
+      ],
+      "description": "Immediate second ESC test target; requires second stand."
+    },
+    {
+      "id": 46,
+      "name": "TEST_STREAM",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "u8"
+        }
+      ],
+      "description": "Enable/disable LC_TEST stream; boolean 0 or 1."
+    },
+    {
+      "id": 47,
+      "name": "BEACON",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "u8"
+        }
+      ],
+      "description": "Set beacon; boolean 0 or 1."
+    },
+    {
+      "id": 48,
+      "name": "PROPS",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "count",
+          "type": "u8"
+        }
+      ],
+      "description": "Select one or two initialized stands; count=1 or 2."
+    },
+    {
+      "id": 49,
+      "name": "STATUS",
+      "direction": "host",
+      "fields": [],
+      "description": "Emit current load-cell configuration as STATUS_TEXT."
+    },
+    {
+      "id": 50,
+      "name": "CALIBRATE",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "prop",
+          "type": "u8"
+        },
+        {
+          "name": "channel",
+          "type": "u8"
+        },
+        {
+          "name": "mass_g",
+          "type": "f32"
+        }
+      ],
+      "description": "Calibrate selected sensor with positive known mass in grams. prop=1/2, channel=0 thrust or 1 torque. CAL_VALUE follows success."
+    },
+    {
+      "id": 51,
+      "name": "SET_CALIBRATION",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "prop",
+          "type": "u8"
+        },
+        {
+          "name": "channel",
+          "type": "u8"
+        },
+        {
+          "name": "factor",
+          "type": "f32"
+        }
+      ],
+      "description": "Set nonzero calibration factor. prop=1/2, channel=0 thrust or 1 torque."
+    },
+    {
+      "id": 52,
+      "name": "SET_ARM",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "prop",
+          "type": "u8"
+        },
+        {
+          "name": "channel",
+          "type": "u8"
+        },
+        {
+          "name": "value",
+          "type": "f32"
+        }
+      ],
+      "description": "Set thrust ratio (channel=0, nonzero dimensionless) or positive torque arm mm (channel=1). prop=1/2."
+    },
+    {
+      "id": 53,
+      "name": "AOA_TRIM",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "degrees",
+          "type": "f32"
+        }
+      ],
+      "description": "Set AoA trim reference in degrees, -180 to 180."
+    },
+    {
+      "id": 54,
+      "name": "AOA_LIMIT",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "degrees",
+          "type": "u16"
+        }
+      ],
+      "description": "AoA travel limit in degrees, 0\u2013180."
+    },
+    {
+      "id": 55,
+      "name": "AOA_ENABLE",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "u8"
+        }
+      ],
+      "description": "Enable AoA tracking or free its motor; boolean."
+    },
+    {
+      "id": 56,
+      "name": "AOA_READ",
+      "direction": "host",
+      "fields": [],
+      "description": "Request AOA_STATE; failed CAN read returns FAILED ACK."
+    },
+    {
+      "id": 57,
+      "name": "AOSS_TRIM",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "degrees",
+          "type": "f32"
+        }
+      ],
+      "description": "Set Pitot AoSS sensor bias in degrees."
+    },
+    {
+      "id": 58,
+      "name": "AOSS_MOVE",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "degrees",
+          "type": "f32"
+        }
+      ],
+      "description": "Set tube angle, clamped to configured limits; disable tracking first for a persistent manual target."
+    },
+    {
+      "id": 59,
+      "name": "AOSS_SERVO_MOVE",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "degrees",
+          "type": "f32"
+        }
+      ],
+      "description": "Convert servo angle to tube target, clamp to limits."
+    },
+    {
+      "id": 60,
+      "name": "AOSS_RATIO",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "ratio",
+          "type": "f32"
+        }
+      ],
+      "description": "Set servo/tube ratio, 0.01\u20131000."
+    },
+    {
+      "id": 61,
+      "name": "AOSS_LIMITS",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "min_deg",
+          "type": "f32"
+        },
+        {
+          "name": "max_deg",
+          "type": "f32"
+        }
+      ],
+      "description": "Set ordered tube limits within -90 to 90 degrees."
+    },
+    {
+      "id": 62,
+      "name": "AOSS_ENABLE",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "u8"
+        }
+      ],
+      "description": "Enable/disable AoSS automatic tracking; boolean."
+    },
+    {
+      "id": 63,
+      "name": "AOSS_READ",
+      "direction": "host",
+      "fields": [],
+      "description": "Request AOSS_STATE."
+    },
+    {
+      "id": 64,
+      "name": "AOSS_ZERO",
+      "direction": "host",
+      "fields": [],
+      "description": "Use current servo position as the tube zero reference."
+    },
+    {
+      "id": 65,
+      "name": "AOSS_DIRECTION",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "direction",
+          "type": "i8"
+        }
+      ],
+      "description": "Set AoSS direction: -1 or +1."
+    },
+    {
+      "id": 66,
+      "name": "AOSS_CAL",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "degrees",
+          "type": "f32"
+        }
+      ],
+      "description": "Apply externally measured tube angle to zero calibration; retains existing controller calibration math."
+    },
+    {
+      "id": 67,
+      "name": "AOSS_TEST",
+      "direction": "host",
+      "fields": [],
+      "description": "Run existing AoSS -10 degree/zero diagnostic movement."
+    },
+    {
+      "id": 68,
+      "name": "AOSS_TURN_SETUP",
+      "direction": "host",
+      "fields": [],
+      "description": "Configure AoSS CAN turn mode and reset servo."
+    },
+    {
+      "id": 69,
+      "name": "AOSS_CONFIG_GET",
+      "direction": "host",
+      "fields": [],
+      "description": "Request AOSS_CONFIG."
+    },
+    {
+      "id": 70,
+      "name": "PITOT_READ",
+      "direction": "host",
+      "fields": [],
+      "description": "Request latest PITOT sample."
+    },
+    {
+      "id": 71,
+      "name": "PITOT_STREAM",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "u8"
+        }
+      ],
+      "description": "Enable PITOT verification stream while holding tracking; disabling releases tracking hold."
+    },
+    {
+      "id": 72,
+      "name": "PITOT_HOLD",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "u8"
+        }
+      ],
+      "description": "Hold/release automatic AoA/AoSS tracking without changing streaming."
+    },
+    {
+      "id": 73,
+      "name": "RAW_PITOT_STREAM",
+      "direction": "host",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "u8"
+        }
+      ],
+      "description": "Enable/disable PITOT streaming without changing tracking hold."
+    }
+  ]
+}

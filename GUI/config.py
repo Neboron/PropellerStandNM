@@ -1,7 +1,7 @@
 # Default values used on startup
 
-rho_default = 1.225                   # kg/m3 standard air density (your comment said kg/cm3; kept the numeric)
-kin_visc_default = 1.48               # x10^-5 m2/s (you use this scale later)
+rho_default = 1.225                   # kg/m3 standard air density
+kin_visc_default = 1.48               # x10^-5 m2/s
 ratio_default = 24.9955               # stepper drive ratio (steps per mm)
 x_center_default = 328                # mm, center position from home
 y_max_default = 107                   # mm
@@ -34,7 +34,7 @@ pwm_ramp_ms_default = 150
 aoss_enabled_default = True
 rotation_dir = 1
 
-# Global scratch lists (they were module-level in your script)
+# Shared scratch lists
 var_list = []
 trq_list = []
 thr_list = []

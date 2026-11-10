@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
         self.center_of_thrust_action.triggered.connect(self.calculate_CT_show)
         self.toolbar.addAction(self.center_of_thrust_action)
 
-        # Disable initially (as in your original)
+        # Enable these controls after configuration.
         self.aoa_aoss_action.setEnabled(False)
         self.calibrate_first_loadcells_action.setEnabled(False)
         self.calibrate_second_loadcells_action.setEnabled(False)
@@ -548,7 +548,7 @@ class MainWindow(QMainWindow):
             print(slow)
             if 'ready!' in slow:
                 self.params.setStyleSheet("background-color: green; color: white;")
-                self.params.setText("Säti andurid ✓")  # or whatever label you like
+                self.params.setText("Säti andurid ✓")
                 self.xy_axes.setEnabled(True)
                 self.initReady.emit()
             if 'emergency!' in slow:
@@ -589,7 +589,7 @@ class MainWindow(QMainWindow):
                 self.jog_done = True
                 if getattr(self, "_centering_via_jog", False):
                     try:
-                        # Mirror your existing 'centering done' visuals/text
+                        # Restore the completed-centering state.
                         self.centering.setStyleSheet("background-color: green; color: white;")
                         self.centering.setText("Pitot' tsentrisse ✓")
                         self.meas_data_running = False
@@ -744,7 +744,7 @@ class MainWindow(QMainWindow):
                 # Expected: readAoA|1786|92.35|0.12
                 parts = s.split("|")  # use original 's' to preserve numeric formatting
                 if len(parts) >= 4:
-                    aoa_mid = parts[2]  # "92.35" (the middle value you want)
+                    aoa_mid = parts[2]  # Servo angle in degrees
 
                     # If the AoA/AoSS window exists, update its label
                     if hasattr(self, "aoa_aoss_window") and self.aoa_aoss_window is not None:
@@ -833,7 +833,7 @@ class MainWindow(QMainWindow):
                     airspeed, aoa_raw, aoa_abs, aoss_raw, aoss_abs,
                     second_thrust_N, second_torque_Nm, second_rpm
                 ]
-                # Make sure you've declared in MainWindow: measurementsFrame = pyqtSignal(int, int, object)
+                # Forward the decoded sample to the measurement worker.
                 self.measurementsFrame.emit(x_steps, y_steps, vals)
 
         if (self.motor_test == False) and (not getattr(self, "_series_running", False)) and (not self.measuringThread.isRunning()):
@@ -1421,8 +1421,8 @@ class MainWindow(QMainWindow):
             AoA    = float(row[7])
             AoSS   = float(row[8])
 
-            # Your update_plot_ax1 divides the input by 10 and labels "Omega x 10".
-            # Pass Omega * 10 so the plotted value equals Omega (rad/s) on-screen.
+            # update_plot_ax1 displays angular speed at one tenth of its value.
+            # Pass angular speed in rad/s; scaling is applied by the plot method.
             self.update_plot_ax1(X, Omega1, Air, AoA, AoSS, Trq1, Thr1)  # Plot 1
 
             # If tandem, add prop #2 torque/thrust overlays on Plot 1
@@ -1487,10 +1487,9 @@ class MainWindow(QMainWindow):
 
         if getattr(self, 'custom_trajectory', False) and hasattr(self, 'list_of_x_targets') and self.list_of_x_targets:
             ys_off = [int(y) for y in getattr(self, 'list_of_y_targets', [0]*len(self.list_of_x_targets))]
-            # If your waypoint Y values are OFFSETS (recommended):
+            # Trajectory Y coordinates are offsets from the selected Y position.
             self._series_y0_steps = base_y_steps + (ys_off[0] if ys_off else 0)
-            # If your waypoint Y values are ABSOLUTE steps instead, use this instead:
-            # self._series_y0_steps = int(ys_off[0]) if ys_off else base_y_steps
+
         else:
             self._series_y0_steps = base_y_steps
 
@@ -1520,20 +1519,16 @@ class MainWindow(QMainWindow):
             xs_steps = [int(x) for x in self.list_of_x_targets]
             ys_off   = [int(y) for y in getattr(self, 'list_of_y_targets', [0]*len(xs_steps))]
 
-            # If your file stores Y OFFSETS (relative to series start Y):
+            # Apply trajectory Y offsets relative to the series start.
             for x_s, dy in zip(xs_steps, ys_off):
                 x_cmd, y_cmd = self._clamp_xy_steps(int(x_s), int(self._series_y0_steps + dy))
                 points.append((x_cmd, y_cmd))
 
-            # If your file stores ABSOLUTE Y values instead, switch to:
-            # for x_s, y_abs in zip(xs_steps, ys_off):
-            #     x_cmd, y_cmd = self._clamp_xy_steps(int(x_s), int(y_abs))
-            #     points.append((x_cmd, y_cmd))
         else:
             x_center_steps = self._center_steps()
             self.shared_data.x_center = x_center_steps / ratio   # keeps worker baseline identical to jogs
 
-            # Now use that step for your geometry
+            # Compute the radial endpoint from the center position.
             radius_mm   = (self.prop.value() * 25.4) * (1.0 + self.shared_data.safety_over_prop / 100.0) / 2.0
             self.radius_mm = radius_mm
             x_goal_steps = max(0, x_center_steps - int(round(radius_mm * ratio)))
@@ -1628,7 +1623,7 @@ class MainWindow(QMainWindow):
 
         x_center = self._center_steps()
         x_target = x_center + self._offset_towards_zero_steps()  # center – |offset|
-        y_target = int(self._series_y0_steps)  # will be used in next step; keep Y at 0 here if you prefer
+        y_target = int(self._series_y0_steps)  # Y target for the next move
 
         x_cmd, y_cmd = self._clamp_xy_steps(x_target, 0)  # <-- ensure Y stays at 0 in this step
         feed_xy, feed_y = self._safe_feeds()
@@ -1669,7 +1664,7 @@ class MainWindow(QMainWindow):
 #         if not getattr(self, "_series_running", False):
 #             return
 #         try:
-#             x_center_steps = self._center_steps()          # <<< use the exact clamped center
+#             x_center_steps = self._center_steps()          # Use the clamped center.
 #             y_target_steps = int(self._series_y0_steps)
 #             x_cmd, y_cmd = self._clamp_xy_steps(x_center_steps, y_target_steps)
 #             feed_xy, feed_y = self._safe_feeds()
@@ -1686,11 +1681,8 @@ class MainWindow(QMainWindow):
     def _clamp_xy_steps(self, x_steps: int, y_steps: int):
         ratio = float(self.shared_data.ratio)
         # Best available limits: X center must be valid, Y is 0..Y_max_from_UI
-        # If you have real travel limits in shared_data, clamp to those instead.
         y_steps_min = 0
         y_steps_max = int(self.Y_pos.maximum() * ratio)  # UI max is 105 mm -> steps
-        # X: if you have known limits, clamp here. Otherwise leave as-is.
-        # Example (uncomment if you have them):
         x_min = int(self.shared_data.x_min_mm * ratio)
         x_max = int(self.shared_data.x_max_mm * ratio)
         x_steps = max(x_min, min(x_steps, x_max))
@@ -1700,13 +1692,13 @@ class MainWindow(QMainWindow):
     
     def _axis_limits_steps(self, x_margin_mm: float = 0.0, y_margin_mm: float = 0.5):
         r = float(self.shared_data.ratio)
-        # Read limits (in mm) from shared_data; adjust names if yours differ
+        # Read axis limits in millimetres from shared_data.
         x_min_mm = float(getattr(self.shared_data, "x_min_mm", 0.0))
         x_max_mm = float(getattr(self.shared_data, "x_max_mm", getattr(self.shared_data, "x_center", 0.0)))
         y_min_mm = float(getattr(self.shared_data, "y_min_mm", 0.0))
         y_max_mm = float(getattr(self.shared_data, "y_max_mm", float(self.Y_pos.maximum())))
 
-        # No X margin (per your preference); small Y margin is okay
+        # Apply the configured margins independently to each axis.
         xm, ym = float(x_margin_mm), float(y_margin_mm)
 
         x_min_steps = int(round((x_min_mm + xm) * r))
@@ -1737,7 +1729,7 @@ class MainWindow(QMainWindow):
         s = (int(self._x_center_steps_from_ui)
              if getattr(self, "_x_center_steps_from_ui", None) is not None
              else int(round(float(self.shared_data.x_center) * r)))
-        # clamp to HW limits if you have them (no X margin)
+        # Clamp to the configured axis limits without an X margin.
         x_min, x_max, _, _ = self._axis_limits_steps(x_margin_mm=0.0, y_margin_mm=0.5)
         return max(x_min, min(s, x_max))
     

@@ -3,6 +3,7 @@ from PyQt5.QtCore import pyqtSignal, QTimer, pyqtSlot
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinBox, QPushButton, QFrame, QApplication
 import serial
 import app_globals
+from i18n import bind_text
 from config import g_const
 from workers.serial_reader import SerialReader
 
@@ -27,19 +28,19 @@ class LC_calibration_1(QWidget):
         layout4 = QVBoxLayout()
         self.setLayout(layout4)
         
-        self.setWindowTitle("1. posti koormusandurite kalibreerimine")
+        bind_text(self, 'Stand 1 load cell calibration', property_name="windowTitle")
         
-        self.label54 = QLabel("1. Kinnita koormusandur horisontaalselt pingi välisküljel oleva klambri külge")
+        self.label54 = bind_text(QLabel(), '1. Mount the load cell horizontally on the bracket outside the stand')
         layout4.addWidget(self.label54)
         
-        self.label55 = QLabel("2. Ilma koormuseta tee anduri nullimine")
+        self.label55 = bind_text(QLabel(), '2. Tare the sensor with no load applied')
         layout4.addWidget(self.label55)
         
-        self.tare_button = QPushButton("Nulli koormusandurid", self)
+        self.tare_button = bind_text(QPushButton(self), 'Tare load cells')
         self.tare_button.clicked.connect(self.tare)
         layout4.addWidget(self.tare_button)
         
-        self.label58 = QLabel("3. Sisesta andurile rakendatav koormus (grammides)")
+        self.label58 = bind_text(QLabel(), '3. Enter the load applied to the sensor (grams)')
         layout4.addWidget(self.label58)
         
         self.known_mass = QDoubleSpinBox()
@@ -48,25 +49,25 @@ class LC_calibration_1(QWidget):
         self.known_mass.setSingleStep(0.01)
         layout4.addWidget(self.known_mass)
         
-        self.label56 = QLabel("4. Aseta koormus andurile ja vali kalibreeritav koormusandur")
+        self.label56 = bind_text(QLabel(), '4. Apply the load and select the load cell to calibrate')
         layout4.addWidget(self.label56)
         
-        self.cal_thrust_button = QPushButton("Tõmbe koormusanduri kalibreerimine", self)
+        self.cal_thrust_button = bind_text(QPushButton(self), 'Calibrate thrust load cell')
         self.cal_thrust_button.clicked.connect(self.send_cal_thrust)
         layout4.addWidget(self.cal_thrust_button)
         
-        self.cal_torque_button = QPushButton("Pöördemomendi koormusanduri kalibreerimine", self)
+        self.cal_torque_button = bind_text(QPushButton(self), 'Calibrate torque load cell')
         self.cal_torque_button.clicked.connect(self.send_cal_torque)
         layout4.addWidget(self.cal_torque_button)
         
-        self.label60 = QLabel("Kalibratsioonifaktor:")
+        self.label60 = bind_text(QLabel(), 'Calibration factor:')
         layout4.addWidget(self.label60)
         
         layout4.addWidget(self.cal_factor)
         
         self.cal_factor.setText('NIL')
         
-        self.label59 = QLabel("5. Märgi kalibratsioonifaktor koormusanduri peale")
+        self.label59 = bind_text(QLabel(), '5. Write the calibration factor on the load cell')
         layout4.addWidget(self.label59)
         
         line = QFrame()
@@ -76,7 +77,7 @@ class LC_calibration_1(QWidget):
 
         layout4.addWidget(line)   
         
-        self.label65 = QLabel("Pöördemomendi koormusanduri kal. faktor")
+        self.label65 = bind_text(QLabel(), 'Torque load cell calibration factor')
         layout4.addWidget(self.label65)
         
         self.torque_cal_val = QDoubleSpinBox()
@@ -86,11 +87,11 @@ class LC_calibration_1(QWidget):
         self.torque_cal_val.setValue(self.shared_data.first_trq_cal_val)
         layout4.addWidget(self.torque_cal_val)
         
-        self.torque_cal_val_button = QPushButton("Salvesta pöördemomendi koormusanduri kal. faktor", self)
+        self.torque_cal_val_button = bind_text(QPushButton(self), 'Save torque load cell calibration factor')
         self.torque_cal_val_button.clicked.connect(self.send_torque_cal_val)
         layout4.addWidget(self.torque_cal_val_button)
         
-        self.label67 = QLabel("Tõmbe koormusanduri kal. faktor")
+        self.label67 = bind_text(QLabel(), 'Thrust load cell calibration factor')
         layout4.addWidget(self.label67)
         
         self.thrust_cal_val = QDoubleSpinBox()
@@ -100,11 +101,11 @@ class LC_calibration_1(QWidget):
         self.thrust_cal_val.setValue(self.shared_data.first_thr_cal_val)
         layout4.addWidget(self.thrust_cal_val)
         
-        self.thrust_cal_val_button = QPushButton("Salvesta tõmbe koormusanduri kal. faktor", self)
+        self.thrust_cal_val_button = bind_text(QPushButton(self), 'Save thrust load cell calibration factor')
         self.thrust_cal_val_button.clicked.connect(self.send_thrust_cal_val)
         layout4.addWidget(self.thrust_cal_val_button)
         
-        self.label68 = QLabel("Pöördemomendi jõuõla pikkus")
+        self.label68 = bind_text(QLabel(), 'Torque arm length')
         layout4.addWidget(self.label68)
         
         self.trq_arm_length = QDoubleSpinBox()
@@ -113,11 +114,11 @@ class LC_calibration_1(QWidget):
         self.trq_arm_length.setValue(self.shared_data.first_trq_arm_length)
         layout4.addWidget(self.trq_arm_length)
         
-        self.trq_arm_length_button = QPushButton("Muuda jõuõla pikkust", self)
+        self.trq_arm_length_button = bind_text(QPushButton(self), 'Update torque arm length')
         self.trq_arm_length_button.clicked.connect(self.send_trq_arm_length)
         layout4.addWidget(self.trq_arm_length_button)
         
-        self.label69 = QLabel("Tõmbe jõuõla suhe (propelleri pöörlemistelg / koormusanduri rakenduspunkt)")
+        self.label69 = bind_text(QLabel(), 'Thrust lever ratio (propeller axis / load cell application point)')
         layout4.addWidget(self.label69)
         
         self.thr_arm_length = QDoubleSpinBox()
@@ -126,40 +127,40 @@ class LC_calibration_1(QWidget):
         self.thr_arm_length.setValue(self.shared_data.first_thr_arm_length)
         layout4.addWidget(self.thr_arm_length)
         
-        self.thr_arm_length_button = QPushButton("Muuda tõmbe jõuõla suhet", self)
+        self.thr_arm_length_button = bind_text(QPushButton(self), 'Update thrust lever ratio')
         self.thr_arm_length_button.clicked.connect(self.send_thr_arm_length)
         layout4.addWidget(self.thr_arm_length_button)
         
-        self.lc_test_button = QPushButton("Testi koormusandureid", self)
+        self.lc_test_button = bind_text(QPushButton(self), 'Test load cells')
         self.lc_test_button.setCheckable(True)
         self.lc_test_button.clicked.connect(self.toggle_test)
         layout4.addWidget(self.lc_test_button)
         
-        self.label61 = QLabel("Tõmbe koormusanduri korrigeeritud lugem (N):")
+        self.label61 = bind_text(QLabel(), 'Corrected thrust load cell reading (N):')
         layout4.addWidget(self.label61)
         
         self.thrust_lc_reading = QLabel()
         layout4.addWidget(self.thrust_lc_reading)
         
-        self.labelThr_grams = QLabel("Tõmbe koormusanduri korrigeeritud lugem (g):")
+        self.labelThr_grams = bind_text(QLabel(), 'Corrected thrust load cell reading (g):')
         layout4.addWidget(self.labelThr_grams)
         
         self.thrust_lc_reading_grams = QLabel()
         layout4.addWidget(self.thrust_lc_reading_grams)
         
-        self.label66 = QLabel("Tõmbe koormusanduri otsene lugem(g):")
+        self.label66 = bind_text(QLabel(), 'Raw thrust load cell reading (g):')
         layout4.addWidget(self.label66)
         
         self.thr_weight_lc_reading = QLabel()
         layout4.addWidget(self.thr_weight_lc_reading)
         
-        self.label62 = QLabel("Pöördemomendi koormusanduri lugem (Nm):")
+        self.label62 = bind_text(QLabel(), 'Torque load cell reading (Nm):')
         layout4.addWidget(self.label62)
         
         self.torque_lc_reading = QLabel()
         layout4.addWidget(self.torque_lc_reading)
         
-        self.label63 = QLabel("Pöördemomendi koormusanduri lugem (g):")
+        self.label63 = bind_text(QLabel(), 'Torque load cell reading (g):')
         layout4.addWidget(self.label63)
         
         self.trq_weight_lc_reading = QLabel()
@@ -178,7 +179,7 @@ class LC_calibration_1(QWidget):
     @pyqtSlot(float)
     def on_cal_factor(self, value: float):
         self.cal_factor.setText(f"{value:.2f}")
-        # reset UI state if you were waiting for a cal value
+        # Reset the pending calibration state.
         self.cal_torque_button.setEnabled(True)
         self.cal_thrust_button.setEnabled(True)
         self.cal_torque_button.setStyleSheet("")
@@ -222,10 +223,10 @@ class LC_calibration_1(QWidget):
         
     def toggle_test(self):
         if self.lc_test_button.isChecked():
-            self.lc_test_button.setText("Lõpeta test")
+            bind_text(self.lc_test_button, 'Stop test')
             self.test_on()
         else:
-            self.lc_test_button.setText("Testi koormusandureid")
+            bind_text(self.lc_test_button, 'Test load cells')
             self.test_off()
 
     def test_on(self):
@@ -249,7 +250,7 @@ class LC_calibration_1(QWidget):
             thrust_N   = thrust_mN / 1000.0          # mN -> N
             torque_Nm  = torque_Nmm / 1000.0         # N·mm -> N·m
 
-            # “Grams equivalent” of corrected thrust if you want to show it:
+            # Convert corrected thrust to its equivalent mass in grams.
             thrust_grams_equiv = (thrust_N / g_const) * 1000.0 * self.shared_data.first_thr_arm_length
 
             thr_raw_g = float(getattr(w, "first_thr_weight_test_value", 0.0))
@@ -272,7 +273,7 @@ class LC_calibration_1(QWidget):
         self._tare_pending = True
         btn = self.tare_button
         btn.setEnabled(False)
-        btn.setText("Nullin…")
+        bind_text(btn, 'Taring…')
         btn.setStyleSheet("QPushButton { background-color: yellow; color: black; }")
         # force a paint right now
         QApplication.processEvents()
@@ -291,10 +292,10 @@ class LC_calibration_1(QWidget):
         # clear any old styling first
         btn.setStyleSheet("")
         btn.setEnabled(True)
-        btn.setText("Nulli koormusandurid ✓")
+        bind_text(btn, 'Tare load cells ✓')
         btn.setStyleSheet("QPushButton { background-color: green; color: white; }")
 
-        QTimer.singleShot(1200, lambda: (btn.setStyleSheet(""), btn.setText("Nulli koormusandurid")))
+        QTimer.singleShot(1200, lambda: (btn.setStyleSheet(""), bind_text(btn, 'Tare load cells')))
 
         # hard repaint in case something queued tries to override
         btn.style().unpolish(btn)
@@ -334,7 +335,7 @@ class LC_calibration_1(QWidget):
         try:
             if self.lc_test_button.isChecked():
                 self.lc_test_button.setChecked(False)
-            self.lc_test_button.setText("Testi koormusandureid")
+            bind_text(self.lc_test_button, 'Test load cells')
         except Exception:
             pass
         event.accept()  # let the window close

@@ -3,8 +3,8 @@ import serial
 from pathlib import Path
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, pyqtSlot, QMetaObject
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QLabel, QGridLayout, QToolBar, QAction, QComboBox,
-    QPushButton, QDoubleSpinBox, QSpinBox, QProgressBar, QFileDialog, QCheckBox
+    QMainWindow, QWidget, QLabel, QGridLayout, QToolBar, QAction, QActionGroup, QComboBox,
+    QPushButton, QDoubleSpinBox, QSpinBox, QProgressBar, QFileDialog, QCheckBox, QTabWidget, QScrollArea
 )
 
 from plot.canvas import Canvas
@@ -12,6 +12,9 @@ from data.shared_data import SharedData
 from data import data_processing as _process_data
 from utils.ports import list_serial_ports
 from workers.serial_reader import SerialReader
+from protocol.codec import pack, unpack, wire_bytes, Result, Event
+from protocol.messages import MessageId, VERSION, SCHEMA_HASH, DEFINITIONS
+from protocol.gui_adapter import command_packet, presentation_line
 from workers.measuring_worker import MeasuringWorker
 from widgets.set_parameters import SetParameters
 from widgets.set_xy_axes import SetXYAxes
@@ -21,12 +24,15 @@ from widgets.rpm_controller_1 import RPM_controller_1
 from widgets.rpm_controller_2 import RPM_controller_2
 from widgets.lc_calibration_1 import LC_calibration_1
 from widgets.lc_calibration_2 import LC_calibration_2
+from widgets.terminal import TerminalWidget
+from diagnostics import DiagnosticLog, SerialMonitor
 from tools.calc_center_of_thrust import Calculate_center_of_thrust
 
 from config import (
     max_number_of_samples_default
 )
 import app_globals
+from i18n import LANGUAGES, bind_text, language_manager, tr
 
 RPM_SCALE = 5000.0 / 5050.0
 RPM_ZERO_DEADBAND = 80.0
@@ -60,17 +66,31 @@ class MainWindow(QMainWindow):
     calFactorUpdated = pyqtSignal(float)
     tareDone = pyqtSignal()
     initReady = pyqtSignal()
+    initFailed = pyqtSignal()
     measurementsFrame = pyqtSignal(int, int, object)
+    measurementMoveDone = pyqtSignal(int, int)
     
-    def __init__(self, parent=None, **kwargs):
+    def __init__(self, parent=None, diagnostic_log_dir=None, **kwargs):
         super().__init__(parent, **kwargs)
+        self.diagnostics = DiagnosticLog(diagnostic_log_dir)
+        self.serial_monitor = SerialMonitor(self.diagnostics.logger)
+        self._connection_failed = False
+        self._diagnostics_closed = False
+        self.controller = None
+        self._protocol_ready = False
+        self._tx_sequence = 0
+        self._pending_acks = {}
+        self._event_requests = {}
+        self._hello_deadline = None
+        self._controller_uptime = None
+        self._fault_stop_sent = False
+        self._protocol_faulted = False
+        self.serialReader = None
+        self.serialReaderThread = QThread(self)
         self.shared_data = SharedData()
         self.setupUI()
         app_globals.window = self
-        self.controller = None
-        self.serialReader = None
         self.measuringWorker = None
-        self.serialReaderThread = QThread()
         self.measuringThread = QThread()
         self.lc_calibration_1 = LC_calibration_1(self.shared_data)
         self.lc_calibration_2 = LC_calibration_2(self.shared_data)
@@ -85,6 +105,55 @@ class MainWindow(QMainWindow):
         self.path = None
         self.csvfile = None
         self.cal_value = 0.0
+        language_manager().changed.connect(self.refresh_language_menu)
+        self.diagnostic_timer = QTimer(self)
+        self.diagnostic_timer.setInterval(1000)
+        self._diagnostic_last_tick = time.monotonic()
+        self.diagnostic_timer.timeout.connect(self.check_diagnostics)
+        self.diagnostic_timer.start()
+
+    def check_diagnostics(self):
+        now = time.monotonic()
+        elapsed = now - self._diagnostic_last_tick
+        if elapsed > 3.0:
+            self.diagnostics.logger.warning("GUI EVENT LOOP delayed %.1f s; display and measurement callbacks may have stalled", elapsed)
+        self._diagnostic_last_tick = now
+        self.serial_monitor.tick()
+        if self._hello_deadline is not None and now >= self._hello_deadline:
+            self._hello_deadline = None
+            self._protocol_failure("StandLink handshake timed out; matching binary firmware is required")
+        for key, deadline in list(self._event_requests.items()):
+            if now >= deadline:
+                self._protocol_failure(f"Completion timeout: seq={key[0]} id={key[1]}; operation outcome unknown")
+                break
+        for sequence, pending in list(self._pending_acks.items()):
+            if now >= pending[2]:
+                self._protocol_failure(f"ACK timeout: seq={sequence} command={pending[1]!r}; execution outcome unknown")
+                break
+
+    def setup_language_menu(self):
+        # Native language names remain recognizable in either interface language.
+        self.language_menu = self.menuBar().addMenu("Keel / Language")
+        self.language_action_group = QActionGroup(self)
+        self.language_action_group.setExclusive(True)
+        self.language_actions = {}
+        for code, name in LANGUAGES:
+            action = QAction(name, self, checkable=True)
+            action.setData(code)
+            action.setChecked(code == language_manager().language)
+            self.language_action_group.addAction(action)
+            self.language_menu.addAction(action)
+            self.language_actions[code] = action
+        self.language_action_group.triggered.connect(
+            lambda action: language_manager().set_language(action.data())
+        )
+
+    def refresh_language_menu(self):
+        self.language_actions[language_manager().language].setChecked(True)
+        self.tabs.setTabText(0, tr("Measurement"))
+        # A language change must not rescan ports or reset connection controls.
+        if self.comboBox.count() == 1 and self.comboBox.itemData(0) is None:
+            self.comboBox.setItemText(0, tr("No ACM/USB ports found"))
 
     def setupUI(self):
         self.measuring_stopped = True
@@ -157,47 +226,56 @@ class MainWindow(QMainWindow):
         self._user_abort = False
 
         self.centralWidget = QWidget(self)
-        self.setCentralWidget(self.centralWidget)
+        self.tabs = QTabWidget(self)
+        self.measurement_scroll = QScrollArea(self)
+        self.measurement_scroll.setWidgetResizable(True)
+        self.measurement_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.measurement_scroll.setWidget(self.centralWidget)
+        self.tabs.addTab(self.measurement_scroll, tr("Measurement"))
+        self.terminal = TerminalWidget(self.diagnostics, self.serial_monitor, self)
+        self.tabs.addTab(self.terminal, "Terminal")
+        self.setCentralWidget(self.tabs)
         self.showMaximized()
         layout = QGridLayout(self.centralWidget)
-        self.toolbar = QToolBar("Lisavalikud")
+        self.setup_language_menu()
+        self.toolbar = bind_text(QToolBar(), 'Additional options', property_name='windowTitle')
         self.addToolBar(self.toolbar)
 
-        self.aoa_aoss_action = QAction("AoA ja AoSS trimmimine", self)
+        self.aoa_aoss_action = bind_text(QAction(self), 'AoA and AoSS trim')
         self.aoa_aoss_action.triggered.connect(self.aoa_aoss_params)
         self.toolbar.addAction(self.aoa_aoss_action)
 
-        self.calibrate_first_loadcells_action = QAction("1.posti koormusandurite kalibreerimine", self)
+        self.calibrate_first_loadcells_action = bind_text(QAction(self), 'Stand 1 load cell calibration')
         self.calibrate_first_loadcells_action.triggered.connect(self.calibrate_first_loadcells)
         self.toolbar.addAction(self.calibrate_first_loadcells_action)
 
-        self.calibrate_second_loadcells_action = QAction("2.posti koormusandurite kalibreerimine", self)
+        self.calibrate_second_loadcells_action = bind_text(QAction(self), 'Stand 2 load cell calibration')
         self.calibrate_second_loadcells_action.triggered.connect(self.calibrate_second_loadcells)
         self.toolbar.addAction(self.calibrate_second_loadcells_action)
 
-        self.rpm_first_controller_action = QAction("1. posti RPM kontrolleri valikud", self)
+        self.rpm_first_controller_action = bind_text(QAction(self), 'Stand 1 RPM controller settings')
         self.rpm_first_controller_action.triggered.connect(self.setup_first_rpm)
         self.toolbar.addAction(self.rpm_first_controller_action)
         
-        self.rpm_second_controller_action = QAction("2. posti RPM kontrolleri valikud", self)
+        self.rpm_second_controller_action = bind_text(QAction(self), 'Stand 2 RPM controller settings')
         self.rpm_second_controller_action.triggered.connect(self.setup_second_rpm)
         self.toolbar.addAction(self.rpm_second_controller_action)
 
-        self.map_action = QAction("Trajektoori valikud", self)
+        self.map_action = bind_text(QAction(self), 'Trajectory settings')
         self.map_action.triggered.connect(self.map_)
         self.toolbar.addAction(self.map_action)
 
-        self.clear_plot_action = QAction("Tühjenda graafik", self)
+        self.clear_plot_action = bind_text(QAction(self), 'Clear plot')
         self.clear_plot_action.triggered.connect(self.cnv.clear_plots)
 
-        self.save_plot_action = QAction("Salvesta graafik", self)
+        self.save_plot_action = bind_text(QAction(self), 'Save plot')
         self.save_plot_action.triggered.connect(self.save_plot)
 
-        self.center_of_thrust_action = QAction("Arvuta tõmbekese", self)
+        self.center_of_thrust_action = bind_text(QAction(self), 'Calculate center of thrust')
         self.center_of_thrust_action.triggered.connect(self.calculate_CT_show)
         self.toolbar.addAction(self.center_of_thrust_action)
 
-        # Disable initially (as in your original)
+        # Enable these controls after configuration.
         self.aoa_aoss_action.setEnabled(False)
         self.calibrate_first_loadcells_action.setEnabled(False)
         self.calibrate_second_loadcells_action.setEnabled(False)
@@ -214,45 +292,46 @@ class MainWindow(QMainWindow):
         layout.setRowStretch(2, 0)
         layout.setRowStretch(3, 1)
 
-        self.setWindowTitle("Stend")
+        bind_text(self, 'Propeller test stand', property_name="windowTitle")
         layout.addWidget(self.cnv, 0, 1, -1, 1)
 
-        self.label20 = QLabel("Vali ühendusport:", self)
+        self.label20 = bind_text(QLabel(self), 'Connection port:')
         layout.addWidget(self.label20, 0, 0, 1, 1)
         
         self.comboBox = QComboBox(self)
         self.update_ports()
         layout.addWidget(self.comboBox, 1, 0, 1, 1)
         
-        self.connect = QPushButton("Ühenda", self)
+        self.connect = bind_text(QPushButton(self), 'Connect')
         self.connect.clicked.connect(self.on_connect_clicked)
         layout.addWidget(self.connect, 2, 0, 1, 1)
         
-        self.params = QPushButton("Säti andurid", self)
+        self.params = bind_text(QPushButton(self), 'Sensor settings')
+        bind_text(self.params, 'See Terminal for controller diagnostics.', property_name='toolTip')
         self.params.setStyleSheet("background-color: None; color: None;")
         self.params.setEnabled(False)
         self.params.clicked.connect(self.set_params)
         layout.addWidget(self.params, 3, 0, 1, 1)
         
-        self.xy_axes = QPushButton("Säti teljed", self)
+        self.xy_axes = bind_text(QPushButton(self), 'Axis settings')
         self.xy_axes.setStyleSheet("background-color: None; color: None;")
         self.xy_axes.setEnabled(False)
         self.xy_axes.clicked.connect(self.set_xy_axes)
         layout.addWidget(self.xy_axes, 4, 0, 1, 1)
         
-        self.file = QPushButton("Vali propelleri konfiguratsiooni fail")
+        self.file = bind_text(QPushButton(), 'Select propeller configuration file')
         self.file.clicked.connect(self.showDialog)
         self.file.setStyleSheet("background-color: None; color: None;")
         self.file.setEnabled(False)
         layout.addWidget(self.file, 5, 0, 1, 1)
         
-        self.homing = QPushButton("Telgede referents")
+        self.homing = bind_text(QPushButton(), 'Home axes')
         self.homing.clicked.connect(self.home)
         self.homing.setStyleSheet("background-color: None; color: None;")
         self.homing.setEnabled(False)
         layout.addWidget(self.homing, 6, 0, 1, 1)
         
-        self.label1 = QLabel("Sisesta propelleri läbimõõt tollides")
+        self.label1 = bind_text(QLabel(), 'Propeller diameter (inches)')
         layout.addWidget(self.label1, 7, 0, 1, 1)
         
         self.prop = QDoubleSpinBox()
@@ -262,7 +341,7 @@ class MainWindow(QMainWindow):
         self.prop.setValue(20.2)
         layout.addWidget(self.prop, 8, 0, 1, 1)
         
-        self.label80 = QLabel("Sisesta mõõtmiskauguse/raadiuse suhe")
+        self.label80 = bind_text(QLabel(), 'Measurement distance / radius ratio')
         layout.addWidget(self.label80, 9, 0, 1, 1)
         
         self.dr_ratio = QDoubleSpinBox()
@@ -272,7 +351,7 @@ class MainWindow(QMainWindow):
         self.dr_ratio.setValue(0.0)
         layout.addWidget(self.dr_ratio, 10, 0, 1, 1)
         
-        self.centering = QPushButton("Pitot' tsentrisse")
+        self.centering = bind_text(QPushButton(), 'Center Pitot probe')
         self.centering.setEnabled(False)
         self.centering.clicked.connect(self.center)
         self.centering.setStyleSheet("background-color: None; color: None;")
@@ -285,7 +364,7 @@ class MainWindow(QMainWindow):
         self.jog_speed.setValue(self.shared_data.x_max_speed)
         #layout.addWidget(self.jog_speed, 10, 0, 1, 1)
         
-        self.label2 = QLabel("Y-telje positsioon mm" )
+        self.label2 = bind_text(QLabel(), 'Y-axis position (mm)')
         layout.addWidget(self.label2, 12, 0, 1, 1)
         
         self.Y_pos = QSpinBox()
@@ -295,19 +374,19 @@ class MainWindow(QMainWindow):
         
         self.Y_pos.valueChanged.connect(self.enable_Y_move_button)
         
-        self.Y_move = QPushButton("Liiguta Y-telge")
+        self.Y_move = bind_text(QPushButton(), 'Move Y axis')
         self.Y_move.clicked.connect(self.moveY)
         self.Y_move.setEnabled(False)
         self.Y_move.setStyleSheet("background-color: None; color: None;")
         layout.addWidget(self.Y_move, 14, 0, 1, 1)
         
-        self.label_reminder1 = QLabel("Lülita toiteplokk sisse")
+        self.label_reminder1 = bind_text(QLabel(), 'Switch on the power supply')
         layout.addWidget(self.label_reminder1, 15, 0, 1, 1)
         
-        self.label_reminder2 = QLabel("Vali korrektne pinge ja vool")
+        self.label_reminder2 = bind_text(QLabel(), 'Set the correct voltage and current')
         layout.addWidget(self.label_reminder2, 16, 0, 1, 1)
         
-        self.label4 = QLabel("1. posti propelleri kiirus (%)")
+        self.label4 = bind_text(QLabel(), 'Stand 1 propeller speed (%)')
         layout.addWidget(self.label4, 17, 0, 1, 1)
         
         self.first_throttle = QDoubleSpinBox()
@@ -317,7 +396,7 @@ class MainWindow(QMainWindow):
         self.first_throttle.setSingleStep(0.1)
         layout.addWidget(self.first_throttle, 18, 0, 1, 1)
         
-        self.label7 = QLabel("2. posti propelleri kiirus (%)")
+        self.label7 = bind_text(QLabel(), 'Stand 2 propeller speed (%)')
         self.label7.setEnabled(False)
         layout.addWidget(self.label7, 19, 0, 1, 1)
         
@@ -329,13 +408,13 @@ class MainWindow(QMainWindow):
         self.second_throttle.setSingleStep(0.1)
         layout.addWidget(self.second_throttle, 20, 0, 1, 1)
         
-        self.testMotorButton = QPushButton("Testi mootorit", self)
+        self.testMotorButton = bind_text(QPushButton(self), 'Test motor')
         self.testMotorButton.setEnabled(False)
         self.testMotorButton.setCheckable(True)
         self.testMotorButton.clicked.connect(self.toggle_motor)
         layout.addWidget(self.testMotorButton, 21, 0, 1, 1)
         
-        self.label5 = QLabel("Mõõdistamise kiirus")
+        self.label5 = bind_text(QLabel(), 'Measurement speed')
         layout.addWidget(self.label5, 22, 0, 1, 1)
         
         self.measure_speed = QSpinBox()
@@ -345,7 +424,7 @@ class MainWindow(QMainWindow):
         self.measure_speed.setValue(200)
         layout.addWidget(self.measure_speed, 23, 0, 1, 1)
         
-        self.label11 = QLabel("Kordusmõõtmiste arv")
+        self.label11 = bind_text(QLabel(), 'Number of measurement sweeps')
         layout.addWidget(self.label11, 24, 0, 1, 1)
         
         self.sweep_count = QSpinBox()
@@ -359,12 +438,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.trajectory_mode_label, 26, 0, 1, 1)  # sits right above the start button
         self.update_trajectory_label()
         
-        self.measure = QPushButton("Alusta mõõtmisega")
+        self.measure = bind_text(QPushButton(), 'Start measurement')
         self.measure.setEnabled(False)
         self.measure.clicked.connect(self.start_measuring)
         layout.addWidget(self.measure, 27, 0, 1, 1)
         
-        self.label6 = QLabel("Mõõdistamise kulg")
+        self.label6 = bind_text(QLabel(), 'Measurement progress')
         layout.addWidget(self.label6, 28, 0, 1, 1)
         
         self.progress = QProgressBar()
@@ -379,17 +458,17 @@ class MainWindow(QMainWindow):
         self.test_progress.setValue(0)
         layout.addWidget(self.test_progress, 29, 0, 1, 1)
         
-        self.back = QPushButton("Pitot' tagasi algasendisse")
+        self.back = bind_text(QPushButton(), 'Return Pitot probe to start')
         self.back.setEnabled(False)
         self.back.clicked.connect(self.come_back)
         layout.addWidget(self.back, 30, 0, 1, 1)
         
-        self.danger = QLabel("Emergency!")
+        self.danger = bind_text(QLabel(), 'Emergency!')
         self.danger.setAlignment(Qt.AlignCenter)
         self.danger.setStyleSheet("background-color: None")
         layout.addWidget(self.danger, 31, 0, 1, 1)
         
-        self.label14 = QLabel("Induced power (W):")
+        self.label14 = bind_text(QLabel(), 'Induced power (W):')
         layout.addWidget(self.label14, 0, 3)
         
         self.label15 = QLabel()
@@ -397,7 +476,7 @@ class MainWindow(QMainWindow):
         self.label15.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.label15, 1, 3)
         
-        self.label16 = QLabel("Total power (W):")
+        self.label16 = bind_text(QLabel(), 'Total power (W):')
         layout.addWidget(self.label16, 2, 3)
         
         self.label17 = QLabel()
@@ -405,7 +484,7 @@ class MainWindow(QMainWindow):
         self.label17.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.label17, 3, 3)
         
-        self.label18 = QLabel("Propeller efficiency (%):")
+        self.label18 = bind_text(QLabel(), 'Propeller efficiency (%):')
         layout.addWidget(self.label18, 4, 3)
         
         self.label19 = QLabel()
@@ -413,7 +492,7 @@ class MainWindow(QMainWindow):
         self.label19.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.label19, 5, 3)
         
-        self.label12 = QLabel("Av induced speed (m/s):")
+        self.label12 = bind_text(QLabel(), 'Average induced speed (m/s):')
         layout.addWidget(self.label12, 6, 3)
         
         self.label13 = QLabel()
@@ -421,7 +500,7 @@ class MainWindow(QMainWindow):
         self.label13.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.label13, 7, 3)
         
-        self.label64 = QLabel("Airspeed ratio:")
+        self.label64 = bind_text(QLabel(), 'Airspeed ratio:')
         layout.addWidget(self.label64, 8, 3)
         
         self.label65 = QLabel()
@@ -429,7 +508,7 @@ class MainWindow(QMainWindow):
         self.label65.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.label65, 9, 3)
         
-        self.label66 = QLabel("Airmass speed (kg/s):")
+        self.label66 = bind_text(QLabel(), 'Air mass flow rate (kg/s):')
         layout.addWidget(self.label66, 10, 3)
         
         self.label67 = QLabel()
@@ -437,7 +516,7 @@ class MainWindow(QMainWindow):
         self.label67.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.label67, 11, 3)
         
-        self.label68 = QLabel("Av max speed (m/s):")
+        self.label68 = bind_text(QLabel(), 'Average maximum speed (m/s):')
         layout.addWidget(self.label68, 12, 3)
         
         self.label69 = QLabel()
@@ -445,61 +524,61 @@ class MainWindow(QMainWindow):
         self.label69.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.label69, 13, 3)
         
-        self.labelRPM = QLabel("1. posti mõõdetud pöörded (RPM)", self)
+        self.labelRPM = bind_text(QLabel(self), 'Stand 1 measured speed (RPM)')
         layout.addWidget(self.labelRPM, 14, 3)
         
         self.first_rpm_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.first_rpm_label, 15, 3)
         
-        self.labelThr  = QLabel("1. posti jõuõlaga arvutatud tõmme (N)", self)
+        self.labelThr  = bind_text(QLabel(self), 'Stand 1 thrust with lever correction (N)')
         layout.addWidget(self.labelThr, 16, 3)
         
         self.first_thr_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.first_thr_label, 17, 3)
         
-        self.labelThrWeight  = QLabel("1. posti mõõdetud tõmbe kaal (g)", self)
+        self.labelThrWeight  = bind_text(QLabel(self), 'Stand 1 measured thrust weight (g)')
         layout.addWidget(self.labelThrWeight, 18, 3)
         
         self.first_thr_weight_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.first_thr_weight_label, 19, 3)
         
-        self.labelTrq  = QLabel("1. posti mõõdetud moment (Nm)", self)
+        self.labelTrq  = bind_text(QLabel(self), 'Stand 1 measured torque (Nm)')
         layout.addWidget(self.labelTrq, 20, 3)
         
         self.first_trq_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.first_trq_label, 21, 3)
         
-        self.labelTrqWeight  = QLabel("1. posti mõõdetud momendi kaal (g)", self)
+        self.labelTrqWeight  = bind_text(QLabel(self), 'Stand 1 measured torque weight (g)')
         layout.addWidget(self.labelTrqWeight, 22, 3)
         
         self.first_trq_weight_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.first_trq_weight_label, 23, 3)
         
-        self.labelRPM = QLabel("2. posti mõõdetud pöörded (RPM)", self)
+        self.labelRPM = bind_text(QLabel(self), 'Stand 2 measured speed (RPM)')
         layout.addWidget(self.labelRPM, 24, 3)
         
         self.second_rpm_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.second_rpm_label, 25, 3)
         
-        self.labelThr  = QLabel("2. posti jõuõlaga arvutatud tõmme (N)", self)
+        self.labelThr  = bind_text(QLabel(self), 'Stand 2 thrust with lever correction (N)')
         layout.addWidget(self.labelThr, 26, 3)
         
         self.second_thr_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.second_thr_label, 27, 3)
         
-        self.labelThrWeight  = QLabel("2. posti mõõdetud tõmbe kaal (g)", self)
+        self.labelThrWeight  = bind_text(QLabel(self), 'Stand 2 measured thrust weight (g)')
         layout.addWidget(self.labelThrWeight, 28, 3)
         
         self.second_thr_weight_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.second_thr_weight_label, 29, 3)
         
-        self.labelTrq  = QLabel("2. posti mõõdetud moment (Nm)", self)
+        self.labelTrq  = bind_text(QLabel(self), 'Stand 2 measured torque (Nm)')
         layout.addWidget(self.labelTrq, 30, 3)
         
         self.second_trq_label.setStyleSheet("border: 1px solid black;")
         layout.addWidget(self.second_trq_label, 31, 3)
         
-        self.labelTrqWeight  = QLabel("2. posti mõõdetud momendi kaal (g)", self)
+        self.labelTrqWeight  = bind_text(QLabel(self), 'Stand 2 measured torque weight (g)')
         layout.addWidget(self.labelTrqWeight, 32, 3)
         
         self.second_trq_weight_label.setStyleSheet("border: 1px solid black;")
@@ -528,15 +607,158 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(interval)  # Set the new interval
         self.timer.start()  # Start the timer with the new interval
         
+    def _write_packet(self, packet):
+        encoded = wire_bytes(packet)
+        written = self.controller.write(encoded)
+        if written != len(encoded):
+            raise OSError(f"Incomplete binary write: {written}/{len(encoded)} bytes")
+
     def sendData(self, data):
-        if self.controller:
-            try:
-                encoded_data = data.encode('utf-8')
-                self.controller.write(encoded_data)
-                print(data)
-            except serial.SerialException as e:
-                print(f"Error sending data: {e}")
-                
+        if not data:
+            return
+        if not self.controller or self._connection_failed:
+            self.diagnostics.logger.error("TX NOT SENT: no usable serial connection; command=%r", data)
+            if data.startswith('init|'):
+                self._sensor_init_failed()
+            return
+        try:
+            # The UI adapter is internal only; the wire always carries typed binary messages.
+            sequence = self._tx_sequence
+            if sequence in self._pending_acks or any(key[0] == sequence for key in self._event_requests):
+                raise ValueError("Sequence wrap reached an outstanding request; wait for completion")
+            packet = command_packet(data, sequence)
+            if not self._protocol_ready and packet.message_id != MessageId.STOP:
+                raise ValueError("StandLink handshake is incomplete; reconnect before issuing commands")
+            timeout = 30.0 if packet.message_id in (MessageId.INIT, MessageId.TARE, MessageId.CALIBRATE) else 5.0
+            self._pending_acks[sequence] = (packet.message_id, data, time.monotonic() + timeout)
+            if packet.message_id in (MessageId.INIT, MessageId.TARE, MessageId.HOME, MessageId.JOG, MessageId.CENTER, MessageId.MEASURE_MOVE):
+                duration = 95 if packet.message_id in (MessageId.HOME, MessageId.JOG, MessageId.CENTER, MessageId.MEASURE_MOVE) else 30
+                self._event_requests[(sequence, packet.message_id)] = time.monotonic() + duration
+            self._tx_sequence = (sequence + 1) & 255
+            self._write_packet(packet)
+            self.serial_monitor.command_sent(data)
+            self.diagnostics.logger.info("TX PACKET seq=%d id=%d bytes=%d", sequence, packet.message_id, len(packet.payload) + 7)
+        except ValueError as exc:
+            self.diagnostics.logger.error("TX REJECTED: %s; command=%r", exc, data)
+            if data.startswith('init|'):
+                self._sensor_init_failed()
+        except (serial.SerialException, OSError) as exc:
+            self._pending_acks.clear()
+            self.serial_monitor.transport_error(f"write failed for {data!r}: {exc}")
+            self.on_serial_error(str(exc))
+
+    def _sensor_init_failed(self):
+        self.params.setStyleSheet("background-color: red; color: white;")
+        bind_text(self.params, 'Sensor settings failed')
+        self.initFailed.emit()
+
+    def _protocol_failure(self, message):
+        self.diagnostics.logger.error("PROTOCOL FAILURE: %s", message)
+        self._protocol_faulted = True
+        if getattr(getattr(self, "param_window", None), "_pending_values", None) is not None:
+            self._sensor_init_failed()
+        self.connect.setStyleSheet("background-color: red; color: white;")
+        bind_text(self.connect, 'Connect')
+        self._protocol_ready = False
+        self._hello_deadline = None
+        self._pending_acks.clear()
+        self._event_requests.clear()
+        self._series_running = False
+        self._user_abort = True
+        self._post_sweep_phase = "idle"
+        self.meas_data_running = False
+        self.measure.setEnabled(False)
+        if self.measuringWorker is not None:
+            QMetaObject.invokeMethod(self.measuringWorker, "cancel", Qt.QueuedConnection)
+        # STOP is allowed without a handshake and is never interpreted as an axis abort.
+        if self.controller and not self._connection_failed and not self._fault_stop_sent:
+            self._fault_stop_sent = True
+            self.sendData('stop')
+        self.params.setEnabled(False)
+
+    @pyqtSlot(object)
+    def handle_packet(self, packet):
+        values = unpack(packet)  # validated in the reader; direct callers get the same checks
+        mid = packet.message_id
+        if mid == MessageId.HELLO_REPLY:
+            if self._hello_deadline is None:
+                self.diagnostics.logger.warning("Ignoring unsolicited HELLO_REPLY")
+                return
+            self._hello_deadline = None
+            version, schema_hash, uptime = values
+            if (version, schema_hash) != (VERSION, SCHEMA_HASH):
+                self._protocol_failure(f"Firmware schema mismatch: version={version}, hash={schema_hash:08x}")
+                return
+            self._protocol_ready = True
+            self._protocol_faulted = False
+            self._controller_uptime = uptime
+            self.diagnostics.logger.info("StandLink v%d ready, schema=%08x", version, schema_hash)
+            self.params.setEnabled(True)
+            self.sendData('BeaconOFF')
+            return
+        if mid == MessageId.ACK:
+            sequence, request_id, result = values
+            pending = self._pending_acks.get(sequence)
+            if pending is None or pending[0] != request_id:
+                self.diagnostics.logger.warning("Unmatched ACK seq=%d id=%d result=%d", sequence, request_id, result)
+                return
+            del self._pending_acks[sequence]
+            if result != Result.ACCEPTED:
+                self._event_requests.pop((sequence, request_id), None)
+                name = Result(result).name if result in Result._value2member_map_ else str(result)
+                self.diagnostics.logger.error("COMMAND REJECTED seq=%d command=%r result=%s", sequence, pending[1], name)
+                self.serial_monitor.command_rejected(pending[1])
+                if request_id == MessageId.INIT:
+                    self._sensor_init_failed()
+                if request_id == MessageId.CALIBRATE:
+                    for attr in ("lc_calib_1_window", "lc_calib_2_window"):
+                        window = getattr(self, attr, None)
+                        if window is not None:
+                            window.cal_torque_button.setEnabled(True)
+                            window.cal_thrust_button.setEnabled(True)
+                if self._series_running:
+                    self._protocol_failure(f"Command rejected: {pending[1]} ({name})")
+            else:
+                self.diagnostics.logger.info("ACK seq=%d id=%d ACCEPTED", sequence, request_id)
+                if request_id == MessageId.STOP:
+                    self.serial_monitor.received_line('OK|stopping')
+            return
+        if mid == MessageId.HEARTBEAT:
+            uptime = values[0]
+            if self._controller_uptime is not None and uptime < self._controller_uptime:
+                # millis wraps at ~49.7 days; small backward jumps mean reboot.
+                if self._controller_uptime - uptime < 0x80000000:
+                    self._protocol_failure("Controller restarted; reconnect and initialize again")
+            self._controller_uptime = uptime
+            return
+        if mid == MessageId.STATUS_TEXT:
+            self.diagnostics.logger.info("FIRMWARE %s", values[0])
+            return  # diagnostic text must never trigger control-state transitions
+        if not self._protocol_ready:
+            return
+        if mid == MessageId.EVENT:
+            code, sequence, request_id, x_steps, y_steps = values
+            if request_id:
+                if self._event_requests.pop((sequence, request_id), None) is None:
+                    self.diagnostics.logger.warning("Ignoring unmatched completion seq=%d id=%d", sequence, request_id)
+                    return
+            if code in (Event.EMERGENCY, Event.SAFETY_OPEN):
+                self._event_requests.clear()
+                self._series_running = False
+                self._user_abort = True
+                if self.measuringWorker is not None:
+                    QMetaObject.invokeMethod(self.measuringWorker, "cancel", Qt.QueuedConnection)
+            if code == Event.MOVE_TIMEOUT:
+                self._protocol_failure(f"Axis operation timed out (seq={sequence}, id={request_id})")
+                return
+            if code == Event.MOVE_DONE:
+                self.measurementMoveDone.emit(x_steps, y_steps)
+                return
+        line = presentation_line(packet)
+        if line:
+            self.serial_monitor.received_line(line)
+            self.handleData(line)
+
     def homingDone(self):
         self.homing_done = True
         self.measure.setEnabled(False)
@@ -546,7 +768,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.test_progress.setValue(0)
         self.homing.setStyleSheet("background-color: green; color: white;")
-        self.homing.setText("Telgede referents ✓")
+        bind_text(self.homing, 'Home axes ✓')
         self.meas_data_running = False
     
     @pyqtSlot(str)    
@@ -556,10 +778,9 @@ class MainWindow(QMainWindow):
             if not s:
                 continue
             slow = s.lower()
-            print(slow)
             if 'ready!' in slow:
                 self.params.setStyleSheet("background-color: green; color: white;")
-                self.params.setText("Säti andurid ✓")  # or whatever label you like
+                bind_text(self.params, 'Sensor settings ✓')
                 self.xy_axes.setEnabled(True)
                 self.initReady.emit()
             if 'emergency!' in slow:
@@ -590,7 +811,7 @@ class MainWindow(QMainWindow):
                 return
             if 'centering done' in slow:
                 self.centering.setStyleSheet("background-color: green; color: white;")
-                self.centering.setText("Pitot' tsentrisse ✓")
+                bind_text(self.centering, 'Center Pitot probe ✓')
                 self.meas_data_running = False
                 self.Y_move.setEnabled(True)
                 if self._post_sweep_phase == "centering":
@@ -600,9 +821,9 @@ class MainWindow(QMainWindow):
                 self.jog_done = True
                 if getattr(self, "_centering_via_jog", False):
                     try:
-                        # Mirror your existing 'centering done' visuals/text
+                        # Restore the completed-centering state.
                         self.centering.setStyleSheet("background-color: green; color: white;")
-                        self.centering.setText("Pitot' tsentrisse ✓")
+                        bind_text(self.centering, 'Center Pitot probe ✓')
                         self.meas_data_running = False
                         self.Y_move.setEnabled(True)
                         self._centering_via_jog = False
@@ -715,6 +936,8 @@ class MainWindow(QMainWindow):
                 else:
                     try:
                         vals = [float(x) for x in parts]
+                        if not all(math.isfinite(value) for value in vals):
+                            return  # SerialMonitor reports the malformed frame.
                         (thr1_corr, thr1_raw_g, trq1_corr, trq1_raw_g, rpm1,
                          thr2_corr, thr2_raw_g, trq2_corr, trq2_raw_g, rpm2) = vals
                         
@@ -758,7 +981,7 @@ class MainWindow(QMainWindow):
                 # Expected: readAoA|1786|92.35|0.12
                 parts = s.split("|")  # use original 's' to preserve numeric formatting
                 if len(parts) >= 4:
-                    aoa_mid = parts[2]  # "92.35" (the middle value you want)
+                    aoa_mid = parts[2]  # Servo angle in degrees
 
                     # If the AoA/AoSS window exists, update its label
                     if hasattr(self, "aoa_aoss_window") and self.aoa_aoss_window is not None:
@@ -805,6 +1028,10 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     print("Error parsing Measurements numeric data:", parts)
                     return
+
+                if (not all(math.isfinite(float(value)) for value in parts)
+                        or abs(x_f) > 2147483647 or abs(y_f) > 2147483647):
+                    return  # Already recorded by SerialMonitor; avoid a Qt slot exception.
                 
                 first_rpm  = _normalize_rpm(first_rpm)
                 second_rpm = _normalize_rpm(second_rpm)
@@ -847,7 +1074,7 @@ class MainWindow(QMainWindow):
                     airspeed, aoa_raw, aoa_abs, aoss_raw, aoss_abs,
                     second_thrust_N, second_torque_Nm, second_rpm
                 ]
-                # Make sure you've declared in MainWindow: measurementsFrame = pyqtSignal(int, int, object)
+                # Forward the decoded sample to the measurement worker.
                 self.measurementsFrame.emit(x_steps, y_steps, vals)
 
         if (self.motor_test == False) and (not getattr(self, "_series_running", False)) and (not self.measuringThread.isRunning()):
@@ -865,20 +1092,15 @@ class MainWindow(QMainWindow):
         
     def toggle_motor(self):
         if self.testMotorButton.isChecked():
-            self.testMotorButton.setText("Seiska mootor")
+            bind_text(self.testMotorButton, 'Stop motor')
             self.sendData('ON')
-            time.sleep(2)
             self.sendData('BeaconON')
-            time.sleep(2)
             self.test_motor()
         else:
-            self.testMotorButton.setText("Testi mootorit")
+            bind_text(self.testMotorButton, 'Test motor')
             self.stop_motor()
-            time.sleep(2)
             self.sendData('OFF')
-            time.sleep(2)
             self.sendData('BeaconOFF')
-            time.sleep(2)
             self.sendData('OFF')
 
     def test_motor(self):
@@ -920,15 +1142,75 @@ class MainWindow(QMainWindow):
             
     def initSerialReader(self):
         if self.controller and not self.serialReaderThread.isRunning():
-            if self.serialReader:
-                self.serialReaderThread.quit()
-                self.serialReaderThread.wait()
-
+            try:
+                self.serialReaderThread.started.disconnect()
+            except TypeError:
+                pass
             self.serialReader = SerialReader(self.controller)
             self.serialReader.moveToThread(self.serialReaderThread)
-            self.serialReader.serial_readout.connect(self.handleData)
+            # Monitor callbacks are thread-safe and observe RX before GUI work.
+            self.serialReader.bytes_received.connect(self.serial_monitor.bytes_received, Qt.DirectConnection)
+            self.serialReader.packet_received.connect(self.serial_monitor.received_packet, Qt.DirectConnection)
+            self.serialReader.protocol_error.connect(self.serial_monitor.protocol_error, Qt.DirectConnection)
+            self.serialReader.serial_error.connect(self.serial_monitor.transport_error, Qt.DirectConnection)
+            # Ignore already queued callbacks from a previous connection.
+            reader = self.serialReader
+            self.serialReader.serial_error.connect(
+                lambda message: self.on_serial_error(message) if reader is self.serialReader else None)
+            self.serialReader.packet_received.connect(
+                lambda packet: self.handle_packet(packet) if reader is self.serialReader else None)
+            self.serialReader.finished.connect(self.serialReaderThread.quit, Qt.DirectConnection)
+            self.serialReader.finished.connect(self.serialReader.deleteLater)
             self.serialReaderThread.started.connect(self.serialReader.run)
             self.serialReaderThread.start()
+
+    @pyqtSlot(str)
+    def on_serial_error(self, message):
+        self._connection_failed = True
+        self._protocol_failure(message)
+        self.reset_button()
+        self.connect.setStyleSheet("background-color: red; color: white;")
+        if getattr(self, "_series_running", False):
+            self.diagnostics.logger.error("MEASUREMENT communication interrupted: %s; automatic resume is unavailable", message)
+
+    def stop_serial_reader(self):
+        if self.serialReaderThread.isRunning():
+            self.serialReader.stop()
+            self.serialReaderThread.quit()
+            if not self.serialReaderThread.wait(1500):
+                self.diagnostics.logger.error("Serial reader did not stop within 1.5 s")
+                return False
+        self.serialReader = None
+        if self.controller:
+            try:
+                self.controller.close()
+            except OSError as exc:
+                self.diagnostics.logger.warning("Serial close failed: %s", exc)
+            self.controller = None
+        self._hello_deadline = None
+        self._pending_acks.clear()
+        self._event_requests.clear()
+        self._protocol_ready = False
+        self.serial_monitor.port_closed()
+        return True
+
+    def closeEvent(self, event):
+        if not self.stop_serial_reader():
+            event.ignore()
+            return
+        self.timer_ports.stop()
+        self.diagnostic_timer.stop()
+        self.terminal.timer.stop()
+        if self.measuringThread.isRunning():
+            self.measuringThread.quit()
+            self.measuringThread.wait()
+        self.shutdown_diagnostics()
+        super().closeEvent(event)
+
+    def shutdown_diagnostics(self):
+        if not self._diagnostics_closed:
+            self._diagnostics_closed = True
+            self.diagnostics.close()
 
     def update_first_rpm_label(self, rpm):
         if self.motor_test == True:
@@ -991,8 +1273,8 @@ class MainWindow(QMainWindow):
             self.second_trq_weight_label.setText('0')
         
     def save_plot(self):
-        fileName, _ = QFileDialog.getSaveFileName(self, "Save Plot", "",
-                      "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)", options=QFileDialog.Options())
+        fileName, _ = QFileDialog.getSaveFileName(self, tr('Save plot'), "",
+                      tr('PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)'), options=QFileDialog.Options())
         if fileName:
             self.cnv.save_only_second_plot(fileName)
         
@@ -1061,40 +1343,65 @@ class MainWindow(QMainWindow):
         self.timer_ports.start()
         
     def update_ports(self):
-        current_ports = list_serial_ports()
-        current_selection = self.comboBox.currentText()
+        try:
+            current_ports = list_serial_ports()
+        except (OSError, serial.SerialException) as exc:
+            self.diagnostics.logger.error("Serial port enumeration failed: %s", exc)
+            return
+        self.serial_monitor.ports_changed(current_ports)
+        if (self.controller and self.serial_monitor.port not in current_ports
+                and not self._connection_failed):
+            self.on_serial_error("Selected serial device disappeared from the operating system port list")
+        current_selection = self.comboBox.currentData()
         self.comboBox.clear()
         if current_ports:
-            self.comboBox.addItems(current_ports)
+            for port in current_ports:
+                self.comboBox.addItem(port, port)
             if current_selection in current_ports:
                 self.comboBox.setCurrentText(current_selection)
         else:
-            self.comboBox.addItem("Ei leia ACM/USB porte")
+            self.comboBox.addItem(tr("No ACM/USB ports found"), None)
             self.reset_button()
             
     def on_connect_clicked(self):
-        selected_port = self.comboBox.currentText()
+        selected_port = self.comboBox.currentData()
         if selected_port:
+            if self.serialReaderThread.isRunning() and not self._connection_failed and not self._protocol_faulted:
+                self.diagnostics.logger.warning("Connect ignored: serial reader is already connected to %s", self.serial_monitor.port)
+                return
+            if not self.stop_serial_reader():
+                return
             try:
-                self.controller = serial.Serial(selected_port, 115200, timeout=0.1, exclusive=True)
+                self.diagnostics.logger.info("Opening serial port %s", selected_port)
+                self.controller = serial.Serial(selected_port, 115200, timeout=0.1, write_timeout=1.0, exclusive=True)
+                self._connection_failed = False
+                self._protocol_ready = False
+                self._tx_sequence = 1
+                self._pending_acks.clear()
+                self._event_requests.clear()
+                self._controller_uptime = None
+                self._fault_stop_sent = False
+                self._protocol_faulted = False
+                self.serial_monitor.port_opened(selected_port)
                 self.initSerialReader()
                 self.lc_calibration_1.initialize(self.shared_data)
                 self.lc_calibration_2.initialize(self.shared_data)
                 self.connect.setStyleSheet("background-color: green; color: white;")
-                self.connect.setText("Ühendatud ✓")
-                self.params.setEnabled(True)
-                self.sendData('BeaconOFF')
+                bind_text(self.connect, 'Connected ✓')
+                self.params.setEnabled(False)
+                self._hello_deadline = time.monotonic() + 5.0
+                self._write_packet(pack(MessageId.HELLO, VERSION, SCHEMA_HASH, sequence=0))
                 
-            except serial.SerialException as e:
-                print(f"Could not open serial port {selected_port}: {e}")
+            except (serial.SerialException, OSError) as e:
+                self.diagnostics.logger.exception("Could not open serial port %s", selected_port)
                 self.connect.setStyleSheet("background-color: red; color: white;")
-                self.connect.setText("Ühenda")
+                bind_text(self.connect, 'Connect')
                 self.testMotorButton.setEnabled(False)
                 
     def reset_button(self):
         try:
             self.connect.setStyleSheet("background-color: None; color: None;")
-            self.connect.setText("Ühenda")
+            bind_text(self.connect, 'Connect')
             self.testMotorButton.setEnabled(False)
             self.file.setStyleSheet("background-color: None; color: None;")
             self.params.setStyleSheet("background-color: None; color: None;")
@@ -1111,16 +1418,16 @@ class MainWindow(QMainWindow):
         self.file.setStyleSheet("background-color: None; color: None;")
         self.fname = QFileDialog.getOpenFileName(
             self,
-            'Otsi propelleri konfiguratsiooni fail',
+            tr('Select propeller configuration'),
             str(prop_folder),          # start directory
-            "CSV Files (*.csv)"        # file type filter
+            tr('CSV Files (*.csv)')        # file type filter
             )
 
         if self.fname[0]:  # check filename part
             self.fileSelected = True
             self.homing.setEnabled(True)
             self.file.setStyleSheet("background-color: green; color: white;")
-            self.file.setText("Vali propelleri konfiguratsiooni fail ✓")
+            bind_text(self.file, 'Select propeller configuration file ✓')
 
     def update_emergency(self):
         if self.e_stop:
@@ -1137,31 +1444,38 @@ class MainWindow(QMainWindow):
 
             self.motor_test = False
             self.testMotorButton.setChecked(False)
-            self.testMotorButton.setText("Testi mootorit")   # reset label right away
+            bind_text(self.testMotorButton, 'Test motor')   # reset label right away
             self.testMotorButton.setEnabled(False)
 
             self.measuring_stopped = True
             self.danger.setStyleSheet("background-color: red; color: None;")
             self.measure.setEnabled(False)
             self.centering.setEnabled(False)
-            self.centering.setText("Pitot' tsentrisse")
+            bind_text(self.centering, 'Center Pitot probe')
             self.back.setEnabled(False)
             self.homing.setStyleSheet("background-color: None; color: None;")
-            self.homing.setText("Telgede referents")
+            bind_text(self.homing, 'Home axes')
         else:
             # Emergency cleared: restore visuals and allow motor test again (when safe)
             self.danger.setStyleSheet("background-color: None; color: None;")
             # Re-enable the motor test button if we have homed (same as normal flow)
             self.testMotorButton.setEnabled(self.homing_done)
             self.sendData('OFF')
-            self.testMotorButton.setText("Testi mootorit")
+            bind_text(self.testMotorButton, 'Test motor')
             
     def set_params(self):
-        if not hasattr(self, 'Parameetrid'):
-            #self.param_window = SetParameters(self.shared_data)
+        previous = getattr(self, 'param_window', None)
+        if previous is None or (not previous.isVisible() and previous._pending_values is None):
+            if previous is not None:
+                self.initReady.disconnect(previous.on_init_ready)
+                self.initFailed.disconnect(previous.on_init_failed)
+                previous.deleteLater()
+            # Reload applied values, including calibration changed in another dialog.
+            # Keep a visible or pending dialog so one INIT always has one owner.
             self.param_window = SetParameters(self.shared_data)
             self.param_window.sendData.connect(self.sendData)
             self.initReady.connect(self.param_window.on_init_ready)
+            self.initFailed.connect(self.param_window.on_init_failed)
         self.param_window.show()
         
     def map_(self):
@@ -1264,6 +1578,7 @@ class MainWindow(QMainWindow):
               f"({self.shared_data.x_center:.6f} mm)")
     
     def come_back(self):
+        self.diagnostics.logger.info("MEASUREMENT return-home requested")
         # Abort any series chaining asap
         self._user_abort = True
         self._series_running = False
@@ -1293,10 +1608,10 @@ class MainWindow(QMainWindow):
         # 3) Reset UI bits (NO self.progress here)
         try:
             self.centering.setStyleSheet("background-color: None; color: None;")
-            self.centering.setText("Pitot' tsentrisse")
+            bind_text(self.centering, 'Center Pitot probe')
             self.Y_move.setStyleSheet("background-color: None; color: None;")
-            self.Y_move.setText("Liiguta Y-telge")
-            self.measure.setText("Alusta mõõtmist")
+            bind_text(self.Y_move, 'Move Y axis')
+            bind_text(self.measure, 'Start measurement')
             self.measure.setStyleSheet("background-color: none; color: none;")
             self.measure.setEnabled(False)
             self.testMotorButton.setEnabled(True)
@@ -1390,7 +1705,7 @@ class MainWindow(QMainWindow):
 
         # UI feedback (unchanged)
         self.Y_move.setStyleSheet("background-color: green; color: white;")
-        self.Y_move.setText("Liiguta Y-telge ✓")
+        bind_text(self.Y_move, 'Move Y axis ✓')
         self.measure.setEnabled(True)
         
 #     def moveY(self):
@@ -1435,8 +1750,8 @@ class MainWindow(QMainWindow):
             AoA    = float(row[7])
             AoSS   = float(row[8])
 
-            # Your update_plot_ax1 divides the input by 10 and labels "Omega x 10".
-            # Pass Omega * 10 so the plotted value equals Omega (rad/s) on-screen.
+            # update_plot_ax1 displays angular speed at one tenth of its value.
+            # Pass angular speed in rad/s; scaling is applied by the plot method.
             self.update_plot_ax1(X, Omega1, Air, AoA, AoSS, Trq1, Thr1)  # Plot 1
 
             # If tandem, add prop #2 torque/thrust overlays on Plot 1
@@ -1463,7 +1778,12 @@ class MainWindow(QMainWindow):
             pass
     
     def start_measuring(self):
-        self.measure.setText("Mõõtmine käib...")
+        if not self._protocol_ready:
+            self.diagnostics.logger.error("Measurement requires a completed StandLink handshake")
+            return
+        self._user_abort = False
+        self.diagnostics.logger.info("MEASUREMENT SERIES START sweeps=%d", self.sweep_count.value())
+        bind_text(self.measure, 'Measuring...')
         self.measure.setStyleSheet("background-color: orange; color: black;")
         self.measure.setEnabled(False)
 
@@ -1501,10 +1821,9 @@ class MainWindow(QMainWindow):
 
         if getattr(self, 'custom_trajectory', False) and hasattr(self, 'list_of_x_targets') and self.list_of_x_targets:
             ys_off = [int(y) for y in getattr(self, 'list_of_y_targets', [0]*len(self.list_of_x_targets))]
-            # If your waypoint Y values are OFFSETS (recommended):
+            # Trajectory Y coordinates are offsets from the selected Y position.
             self._series_y0_steps = base_y_steps + (ys_off[0] if ys_off else 0)
-            # If your waypoint Y values are ABSOLUTE steps instead, use this instead:
-            # self._series_y0_steps = int(ys_off[0]) if ys_off else base_y_steps
+
         else:
             self._series_y0_steps = base_y_steps
 
@@ -1516,7 +1835,7 @@ class MainWindow(QMainWindow):
             return
 
         self.current_sweep += 1
-        print(f"Starting sweep {self.current_sweep}/{self.total_sweeps}")
+        self.diagnostics.logger.info("SWEEP START %d/%d", self.current_sweep, self.total_sweeps)
         
         try:
             self.cnv.clear_plot1()
@@ -1534,20 +1853,16 @@ class MainWindow(QMainWindow):
             xs_steps = [int(x) for x in self.list_of_x_targets]
             ys_off   = [int(y) for y in getattr(self, 'list_of_y_targets', [0]*len(xs_steps))]
 
-            # If your file stores Y OFFSETS (relative to series start Y):
+            # Apply trajectory Y offsets relative to the series start.
             for x_s, dy in zip(xs_steps, ys_off):
                 x_cmd, y_cmd = self._clamp_xy_steps(int(x_s), int(self._series_y0_steps + dy))
                 points.append((x_cmd, y_cmd))
 
-            # If your file stores ABSOLUTE Y values instead, switch to:
-            # for x_s, y_abs in zip(xs_steps, ys_off):
-            #     x_cmd, y_cmd = self._clamp_xy_steps(int(x_s), int(y_abs))
-            #     points.append((x_cmd, y_cmd))
         else:
             x_center_steps = self._center_steps()
             self.shared_data.x_center = x_center_steps / ratio   # keeps worker baseline identical to jogs
 
-            # Now use that step for your geometry
+            # Compute the radial endpoint from the center position.
             radius_mm   = (self.prop.value() * 25.4) * (1.0 + self.shared_data.safety_over_prop / 100.0) / 2.0
             self.radius_mm = radius_mm
             x_goal_steps = max(0, x_center_steps - int(round(radius_mm * ratio)))
@@ -1580,8 +1895,10 @@ class MainWindow(QMainWindow):
         # wire signals
         self.measuringWorker.sendData.connect(self.sendData)  # serial out path
         self.measurementsFrame.connect(self.measuringWorker.on_measurements, type=Qt.QueuedConnection)
+        self.measurementMoveDone.connect(self.measuringWorker.on_move_done, type=Qt.QueuedConnection)
         self.tareDone.connect(self.measuringWorker.on_tare_done, type=Qt.QueuedConnection)
         self.measuringWorker.finished.connect(self.on_measuring_finished, Qt.QueuedConnection)
+        self.measuringWorker.error.connect(self.on_measurement_error)
         self.measuringWorker.progress.connect(self.on_worker_progress, Qt.QueuedConnection)        
         try:
             self.measuringWorker.liveData.connect(self.on_live_data, type=Qt.QueuedConnection)
@@ -1603,7 +1920,14 @@ class MainWindow(QMainWindow):
         self.measuringThread.start()
         
     @pyqtSlot(str)
+    def on_measurement_error(self, message):
+        self.diagnostics.logger.error("MEASUREMENT ERROR: %s", message)
+
+    @pyqtSlot(str)
     def on_measuring_finished(self, csv_path):
+        if not self._protocol_ready or getattr(self, "_user_abort", False):
+            return
+        self.diagnostics.logger.info("SWEEP FINISHED %s/%s csv=%s", self.current_sweep, self.total_sweeps, csv_path)
         # progress across sweeps
         try:
             self.test_progress.setValue(self.current_sweep)
@@ -1616,7 +1940,7 @@ class MainWindow(QMainWindow):
             self._postprocess_after_home = True
             self._going_home = True
             self.sendData('stop')
-            self.measure.setText("Alusta mõõtmist")
+            bind_text(self.measure, 'Start measurement')
             self.measure.setStyleSheet("background-color: none; color: none;")
             self.measure.setEnabled(False)
             QTimer.singleShot(self._post_sweep_delay_ms, self.come_back)
@@ -1642,7 +1966,7 @@ class MainWindow(QMainWindow):
 
         x_center = self._center_steps()
         x_target = x_center + self._offset_towards_zero_steps()  # center – |offset|
-        y_target = int(self._series_y0_steps)  # will be used in next step; keep Y at 0 here if you prefer
+        y_target = int(self._series_y0_steps)  # Y target for the next move
 
         x_cmd, y_cmd = self._clamp_xy_steps(x_target, 0)  # <-- ensure Y stays at 0 in this step
         feed_xy, feed_y = self._safe_feeds()
@@ -1683,7 +2007,7 @@ class MainWindow(QMainWindow):
 #         if not getattr(self, "_series_running", False):
 #             return
 #         try:
-#             x_center_steps = self._center_steps()          # <<< use the exact clamped center
+#             x_center_steps = self._center_steps()          # Use the clamped center.
 #             y_target_steps = int(self._series_y0_steps)
 #             x_cmd, y_cmd = self._clamp_xy_steps(x_center_steps, y_target_steps)
 #             feed_xy, feed_y = self._safe_feeds()
@@ -1700,11 +2024,8 @@ class MainWindow(QMainWindow):
     def _clamp_xy_steps(self, x_steps: int, y_steps: int):
         ratio = float(self.shared_data.ratio)
         # Best available limits: X center must be valid, Y is 0..Y_max_from_UI
-        # If you have real travel limits in shared_data, clamp to those instead.
         y_steps_min = 0
         y_steps_max = int(self.Y_pos.maximum() * ratio)  # UI max is 105 mm -> steps
-        # X: if you have known limits, clamp here. Otherwise leave as-is.
-        # Example (uncomment if you have them):
         x_min = int(self.shared_data.x_min_mm * ratio)
         x_max = int(self.shared_data.x_max_mm * ratio)
         x_steps = max(x_min, min(x_steps, x_max))
@@ -1714,13 +2035,13 @@ class MainWindow(QMainWindow):
     
     def _axis_limits_steps(self, x_margin_mm: float = 0.0, y_margin_mm: float = 0.5):
         r = float(self.shared_data.ratio)
-        # Read limits (in mm) from shared_data; adjust names if yours differ
+        # Read axis limits in millimetres from shared_data.
         x_min_mm = float(getattr(self.shared_data, "x_min_mm", 0.0))
         x_max_mm = float(getattr(self.shared_data, "x_max_mm", getattr(self.shared_data, "x_center", 0.0)))
         y_min_mm = float(getattr(self.shared_data, "y_min_mm", 0.0))
         y_max_mm = float(getattr(self.shared_data, "y_max_mm", float(self.Y_pos.maximum())))
 
-        # No X margin (per your preference); small Y margin is okay
+        # Apply the configured margins independently to each axis.
         xm, ym = float(x_margin_mm), float(y_margin_mm)
 
         x_min_steps = int(round((x_min_mm + xm) * r))
@@ -1751,7 +2072,7 @@ class MainWindow(QMainWindow):
         s = (int(self._x_center_steps_from_ui)
              if getattr(self, "_x_center_steps_from_ui", None) is not None
              else int(round(float(self.shared_data.x_center) * r)))
-        # clamp to HW limits if you have them (no X margin)
+        # Clamp to the configured axis limits without an X margin.
         x_min, x_max, _, _ = self._axis_limits_steps(x_margin_mm=0.0, y_margin_mm=0.5)
         return max(x_min, min(s, x_max))
     
@@ -1780,10 +2101,10 @@ class MainWindow(QMainWindow):
     
     def update_trajectory_label(self):
         if getattr(self, "custom_trajectory", False):
-            self.trajectory_mode_label.setText("Mõõtmisrežiim: Trajektoor failist")
+            bind_text(self.trajectory_mode_label, 'Measurement mode: Trajectory from file')
             self.trajectory_mode_label.setStyleSheet("color: gray;")
         else:
-            self.trajectory_mode_label.setText("Mõõtmisrežiim: Sirge trajektoor")
+            bind_text(self.trajectory_mode_label, 'Measurement mode: Straight trajectory')
             self.trajectory_mode_label.setStyleSheet("color: gray;")
 
     def calculate_CT_show(self):

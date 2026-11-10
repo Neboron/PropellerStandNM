@@ -251,7 +251,7 @@ def _tandem_average_file(window):
 
 # ============================================================
 # Single-prop path (legacy behavior): helpers
-# (same functionality as your current process_data, but modular)
+# Processing helpers
 # ============================================================
 
 def _read_omega_values(log_path):
@@ -282,7 +282,7 @@ def _omega_mode(values):
 def _aggregate_at_x(log_path, x_mp):
     """
     Collect rows with X == x_mp and compute means
-    (matches your original per-x loop behavior).
+    Preserves per-position processing.
     Returns dict or None if no matches.
     """
     mean_counter = 0
@@ -483,7 +483,7 @@ def _single_prop_full(window):
     ]
 
     # Omega (mode) from raw log (column 5) — used in summary only
-    omega_values = _read_omega_values(log_path)    # existing helper reads col 5 :contentReference[oaicite:1]{index=1}
+    omega_values = _read_omega_values(log_path)    # Angular speed is read from column 5.
     omega_m = _omega_mode(omega_values)
     
     try:

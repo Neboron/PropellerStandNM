@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinB
 import serial
 from pathlib import Path
 import app_globals
+from i18n import bind_text, tr
 
 list_of_x_targets: list[int] = []
 list_of_y_targets: list[int] = []   # relative steps
@@ -24,36 +25,36 @@ class MapTrajectory(QWidget):
         
         layout2 = QVBoxLayout()
         
-        self.setWindowTitle("Trajektoori kaardistamine")
+        bind_text(self, 'Map trajectory', property_name="windowTitle")
         
-        self.label2 = QLabel("1. Kustuta vana trajektoori fail mälust enne uue trajektoori tegemist")
+        self.label2 = bind_text(QLabel(), '1. Clear the previous trajectory from memory before creating a new one')
         layout2.addWidget(self.label2)
         
-        self.label3 = QLabel("2. Liiguta Pitot' Y-telg korrektsele kaugusele")
+        self.label3 = bind_text(QLabel(), '2. Move the Pitot probe to the correct Y-axis distance')
         layout2.addWidget(self.label3)
         
-        self.label4 = QLabel("3. Salvesta algse punkti koordinaadid")
+        self.label4 = bind_text(QLabel(), '3. Save the starting point coordinates')
         layout2.addWidget(self.label4)
         
-        self.label5 = QLabel("4. Liiguta Pitot' järgmisesse mõõtepunkti")
+        self.label5 = bind_text(QLabel(), '4. Move the Pitot probe to the next measurement point')
         layout2.addWidget(self.label5)
         
-        self.label6 = QLabel("5. Salvesta koordinaadid")
+        self.label6 = bind_text(QLabel(), '5. Save the coordinates')
         layout2.addWidget(self.label6)
         
-        self.label7 = QLabel("6. Kui trajektoor on kaardistatud, siis sulge aken")
+        self.label7 = bind_text(QLabel(), '6. Close the window when the trajectory is complete')
         layout2.addWidget(self.label7)
         
         self.label8 = QLabel(" " )
         layout2.addWidget(self.label8)
         
-        self.centering = QPushButton("Pitot' tsentrisse")
+        self.centering = bind_text(QPushButton(), 'Center Pitot probe')
         self.centering.setEnabled(True)
         self.centering.clicked.connect(app_globals.window.center)
         self.centering.setStyleSheet("background-color: None; color: None;")
         layout2.addWidget(self.centering)
         
-        self.label10 = QLabel("X-telje positsioon mm")
+        self.label10 = bind_text(QLabel(), 'X-axis position (mm)')
         layout2.addWidget(self.label10)
         
         self.X_pos_map = QDoubleSpinBox()
@@ -62,7 +63,7 @@ class MapTrajectory(QWidget):
         self.X_pos_map.setSingleStep(3)
         layout2.addWidget(self.X_pos_map)
         
-        self.label9 = QLabel("Y-telje positsioon mm")
+        self.label9 = bind_text(QLabel(), 'Y-axis position (mm)')
         layout2.addWidget(self.label9)
         
         self.Y_pos_map = QSpinBox()
@@ -70,26 +71,26 @@ class MapTrajectory(QWidget):
         self.Y_pos_map.setMaximum(self.shared_data.y_max)
         layout2.addWidget(self.Y_pos_map)
         
-        self.sensor_move_map = QPushButton("Liiguta Pitot' sensorit")
+        self.sensor_move_map = bind_text(QPushButton(), 'Move Pitot probe')
         self.sensor_move_map.clicked.connect(self.move_sensor_map)
         layout2.addWidget(self.sensor_move_map)
         
-        self.save = QPushButton("Salvesta koordinaadid mällu")
+        self.save = bind_text(QPushButton(), 'Save coordinates to memory')
         self.save.clicked.connect(self.save_xy)
         layout2.addWidget(self.save)
         
         self.space = QLabel(" " )
         layout2.addWidget(self.space)
         
-        self.wp_file = QPushButton("Salvesta trajektoori fail")
+        self.wp_file = bind_text(QPushButton(), 'Save trajectory file')
         self.wp_file.clicked.connect(self.save_wp_file)
         layout2.addWidget(self.wp_file)
         
-        self.wp_load = QPushButton("Otsi olemasolev trajektoori fail")
+        self.wp_load = bind_text(QPushButton(), 'Browse for trajectory file')
         self.wp_load.clicked.connect(self.load_wp_file)
         layout2.addWidget(self.wp_load)
         
-        self.delete = QPushButton("Kustuta trajektoor mälust")
+        self.delete = bind_text(QPushButton(), 'Clear trajectory from memory')
         self.delete.clicked.connect(self.delete_wp)
         layout2.addWidget(self.delete)
         
@@ -140,8 +141,8 @@ class MapTrajectory(QWidget):
         except Exception:
             pass
         try:
-            QMessageBox.information(self, "Trajektoor eemaldatud",
-                                    "Trajektoor kustutati mälust. Järgmine mõõtmine kasutab vaikimisi trajektoori.")
+            QMessageBox.information(self, tr('Trajectory cleared'),
+                                    tr('The trajectory was cleared from memory. The next measurement will use the default trajectory.'))
             self._set_wp_status("neutral")
         except Exception:
             pass
@@ -210,7 +211,7 @@ class MapTrajectory(QWidget):
         t_norm = t.replace(',', '.')
         m = _re.fullmatch(r'([+-]?\d+(?:\.\d+)?)(?:\s*(mm|steps?))?$', t_norm, flags=_re.I)
         if not m:
-            raise ValueError(f"Vigane number: “{token}”")
+            raise ValueError(tr("Invalid number: “{token}”", token=token))
         val = float(m.group(1))
         unit = (m.group(2) or '').lower()
         spmm = self._steps_per_mm()
@@ -222,12 +223,12 @@ class MapTrajectory(QWidget):
         default_dir = self._get_default_wp_dir()
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Laadi trajektoori fail",
+            tr('Load trajectory file'),
             default_dir,
-            "csv(*.csv)"
+            tr('CSV Files (*.csv)')
         )
         if not path:
-            QMessageBox.information(self, "Tühistatud", "Faili ei laetud.")
+            QMessageBox.information(self, tr('Canceled'), tr('No file was loaded.'))
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -238,9 +239,12 @@ class MapTrajectory(QWidget):
                     list_of_x_targets.append(int(row[0]))
                     list_of_y_targets.append(int(row[1]))
             # After reading the CSV successfully:
-            QMessageBox.information(self, "Laetud", f"Fail: {path}\nPunkte: {len(list_of_x_targets)}")
+            QMessageBox.information(
+                self, tr('Loaded'),
+                tr("File: {path}\nPoints: {count}", path=path, count=len(list_of_x_targets))
+            )
 
-            # NEW — mirror lists into MainWindow:
+            # Mirror waypoint lists into MainWindow.
             app_globals.window.list_of_x_targets = list(list_of_x_targets)
             app_globals.window.list_of_y_targets = list(list_of_y_targets)
             app_globals.window.custom_trajectory = len(list_of_x_targets) > 0
@@ -248,7 +252,7 @@ class MapTrajectory(QWidget):
             self._set_wp_status("saved")
             self.modeChanged.emit(app_globals.window.custom_trajectory)
         except Exception as e:
-            QMessageBox.critical(self, "Viga laadimisel", str(e))
+            QMessageBox.critical(self, tr('Error loading file'), str(e))
 
     def _get_default_wp_dir(self):
         """Return the Desktop/trajektoorid folder, create if missing."""
@@ -260,12 +264,12 @@ class MapTrajectory(QWidget):
         default_dir = self._get_default_wp_dir()
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Salvesta trajektoori fail",
+            tr('Save trajectory file'),
             str(Path(default_dir) / "trajektoor.csv"),
-            "csv(*.csv)"
+            tr('CSV Files (*.csv)')
         )
         if not path:
-            QMessageBox.information(self, "Tühistatud", "Faili ei salvestatud.")
+            QMessageBox.information(self, tr('Canceled'), tr('No file was saved.'))
             return
         if not path.endswith(".csv"):
             path += ".csv"
@@ -274,7 +278,10 @@ class MapTrajectory(QWidget):
                 w = csv.writer(f, delimiter=' ')
                 for x, yrel in zip(list_of_x_targets, list_of_y_targets):
                     w.writerow([int(x), int(yrel)])
-            QMessageBox.information(self, "Salvestatud", f"Fail: {path}\nPunkte: {len(list_of_x_targets)}")
+            QMessageBox.information(
+                self, tr('Saved'),
+                tr("File: {path}\nPoints: {count}", path=path, count=len(list_of_x_targets))
+            )
             self._set_wp_status("saved")
         except Exception as e:
-            QMessageBox.critical(self, "Viga salvestamisel", str(e))
+            QMessageBox.critical(self, tr('Error saving file'), str(e))

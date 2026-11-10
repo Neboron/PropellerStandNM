@@ -3,6 +3,7 @@ from PyQt5.QtCore import QTimer
 import csv, math, numpy as np, os
 from scipy.integrate import quad
 from pathlib import Path
+from i18n import bind_text, tr
 
 # ------------------------------------------------------------
 # Local helpers (mirrors data_processing’s file reader style)
@@ -58,7 +59,7 @@ class Calculate_center_of_thrust(QWidget):
         super().__init__()
         layout6 = QVBoxLayout()
         self.setLayout(layout6)
-        self.setWindowTitle("Õhuvoo monitoorimise lisaarvutused")
+        bind_text(self, 'Additional airflow calculations', property_name="windowTitle")
 
         # UI state
         self.zero_file_selected = False
@@ -66,20 +67,20 @@ class Calculate_center_of_thrust(QWidget):
         self.zero_log_file_name = None
         self.point_eight_log_file_name = None
 
-        self.zero_log_file_button = QPushButton("Vali 0R logi fail")
+        self.zero_log_file_button = bind_text(QPushButton(), 'Select 0R log file')
         self.zero_log_file_button.clicked.connect(self.show_0R_Dialog)
         self.zero_log_file_button.setStyleSheet("background-color: None; color: None;")
         layout6.addWidget(self.zero_log_file_button)
 
-        self.point_eight_log_file_button = QPushButton("Vali 0.8R logifail")
+        self.point_eight_log_file_button = bind_text(QPushButton(), 'Select 0.8R log file')
         self.point_eight_log_file_button.clicked.connect(self.show_8R_Dialog)
         self.point_eight_log_file_button.setStyleSheet("background-color: None; color: None;")
         layout6.addWidget(self.point_eight_log_file_button)
 
-        self.label200 = QLabel("Aken sulgub automaatselt kui arvutus on edukalt tehtud", self)
+        self.label200 = bind_text(QLabel(self), 'The window closes automatically after a successful calculation')
         layout6.addWidget(self.label200)
 
-        self.confirm_button = QPushButton("Arvuta", self)
+        self.confirm_button = bind_text(QPushButton(self), 'Calculate')
         self.confirm_button.clicked.connect(lambda: self.process_logs(self.zero_log_file_name, self.point_eight_log_file_name))
         self.confirm_button.setStyleSheet("background-color: None; color: None;")
         self.confirm_button.setEnabled(False)
@@ -88,7 +89,7 @@ class Calculate_center_of_thrust(QWidget):
     def show_0R_Dialog(self):
         home_dir = str(Path.home())
         self.zero_log_file_button.setStyleSheet("background-color: None; color: None;")
-        self.zero_log_file_name, _ = QFileDialog.getOpenFileName(self, 'Otsi 0R logi fail', home_dir, "csv(*.csv)")
+        self.zero_log_file_name, _ = QFileDialog.getOpenFileName(self, tr('Browse for 0R log file'), home_dir, tr('CSV Files (*.csv)'))
         if self.zero_log_file_name:
             self.zero_file_selected = True
             self.zero_log_file_button.setStyleSheet("background-color: green; color: white;")
@@ -97,7 +98,7 @@ class Calculate_center_of_thrust(QWidget):
     def show_8R_Dialog(self):
         home_dir = str(Path.home())
         self.point_eight_log_file_button.setStyleSheet("background-color: None; color: None;")
-        self.point_eight_log_file_name, _ = QFileDialog.getOpenFileName(self, 'Otsi 0.8R logi fail', home_dir, "csv(*.csv)")
+        self.point_eight_log_file_name, _ = QFileDialog.getOpenFileName(self, tr('Browse for 0.8R log file'), home_dir, tr('CSV Files (*.csv)'))
         if self.point_eight_log_file_name:
             self.point_eight_file_selected = True
             self.point_eight_log_file_button.setStyleSheet("background-color: green; color: white;")
@@ -134,14 +135,12 @@ class Calculate_center_of_thrust(QWidget):
 
         for rz, rp in zip(rows_zero_raw, rows_point8_raw):
             try:
-                # Column map follows data_processing single-prop CSV (no omega column in output):contentReference[oaicite:4]{index=4}
+                # Raw single-propeller CSV column layout:
                 # 0=prop_inch, 1=x_mm, 2=y_mm, 3=torque, 4=thrust, 5=omega (raw logs), 6=airspeed, 7=aoa, 8=aoss,
                 # 9=v_tan, 10=v_rad, 11=v_axial, then geometry/kinematics in mean CSV.
                 v_axial_zero = float(rz[11])
                 v_axial_p8   = float(rp[11])
                 x_pos_m      = float(rz[2]) / 1000.0  # index 2 is y_mm in raw logs; BUT in mean CSV header it's x_mm at index 3.
-                                                     # We rely on raw-log layout used by data_processing readers:contentReference[oaicite:5]{index=5}.
-                # If the inputs are mean CSVs (comma variant), indices still align for the first 12 fields.
                 prop_inch    = float(rz[0])
                 thrust_zero  = float(rz[4])
                 delta_va     = max(v_axial_p8 - v_axial_zero, 0.0)
@@ -161,7 +160,7 @@ class Calculate_center_of_thrust(QWidget):
                 # Append two new columns to the original row
                 data_rows.append(rz + [f"{diff_mass_rate:.2f}", f"{diff_thrust:.2f}"])
             except Exception:
-                # Skip malformed rows silently (consistent with data_processing’s forgiving IO):contentReference[oaicite:6]{index=6}
+                # Skip malformed rows silently (consistent with data_processing’s forgiving IO)
                 continue
 
         if not data_rows or radius_m is None:
@@ -194,7 +193,7 @@ class Calculate_center_of_thrust(QWidget):
         r_CT = 2.0 * thrust_moment / thrust_mean if thrust_mean else 0.0
         center_of_thrust_pct = (r_CT / radius_m) * 100.0 if radius_m else 0.0
 
-        # 5) Write structured CSV (comma-separated) with a summary block appended (like data_processing):contentReference[oaicite:7]{index=7}
+        # 5) Write structured CSV (comma-separated) with a summary block appended (like data_processing)
         base, ext = os.path.splitext(zero_log_file)
         out_path = base + "_ct.csv"
 
@@ -223,7 +222,7 @@ class Calculate_center_of_thrust(QWidget):
         ]
 
         with open(out_path, "w", newline="") as f:
-            w = csv.writer(f)  # comma-separated to match data_processing outputs:contentReference[oaicite:8]{index=8}
+            w = csv.writer(f)  # comma-separated to match data_processing outputs
             w.writerow(header)
             w.writerows(data_rows)
             w.writerow([])  # blank line before summary
@@ -234,7 +233,7 @@ class Calculate_center_of_thrust(QWidget):
 
         print(f"Modified CSV written to '{out_path}'")
         self.confirm_button.setStyleSheet("background-color: green; color: white;")
-        self.confirm_button.setText("Arvutatud")
+        bind_text(self.confirm_button, 'Calculated')
         QTimer.singleShot(1000, self.close)
 
 # from data_processing import _read_rows_space_delimited  # reuse existing helper

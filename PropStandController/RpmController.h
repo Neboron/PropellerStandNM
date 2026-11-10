@@ -47,7 +47,7 @@
 #define RPM_UPDATE_INTERVAL 1000 //oli 200
 #define MS_TO_M 60000.0
 
-// ✅ Set this to match your hardware
+// Sensor pulses per revolution
 // 1 magnet / 1 slot and counting one edge (FALLING or RISING only) -> 1.0
 // 2 magnets / 2 slots (or counting both edges of 1 magnet) -> 2.0
 #define PULSES_PER_REV 1.0

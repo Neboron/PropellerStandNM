@@ -44,7 +44,7 @@ class SharedData:
         self._aoss_enabled = aoss_enabled_default
         # Rotation direction: -1 = CW (päripäeva), +1 = CCW (vastupäeva)
         self._rotation_dir = 1
-        # One-time probe mounting sign (global flip if your rig’s sign is inverted)
+        # Probe mounting sign for the global angle convention
         # Keep at +1 unless the S-test shows it needs flipping.
         self._mount_sign = 1
 
@@ -55,7 +55,7 @@ class SharedData:
 #        except Exception:
 #            return 1    
 
-    # All your @property getters/setters:
+    # Properties
     first_trq_arm_length = property(lambda s: s._first_trq_arm_length, lambda s, v: setattr(s, "_first_trq_arm_length", v))
     first_thr_arm_length = property(lambda s: s._first_thr_arm_length, lambda s, v: setattr(s, "_first_thr_arm_length", v))
     second_trq_arm_length = property(lambda s: s._second_trq_arm_length, lambda s, v: setattr(s, "_second_trq_arm_length", v))

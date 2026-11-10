@@ -3,6 +3,7 @@ from PyQt5.QtCore import pyqtSignal, QTimer
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinBox, QPushButton
 import serial
 import app_globals
+from i18n import bind_text
 
 class RPM_controller_1(QWidget):
     sendData = pyqtSignal(str)
@@ -15,9 +16,9 @@ class RPM_controller_1(QWidget):
         layout5 = QVBoxLayout()
         self.setLayout(layout5)
         
-        self.setWindowTitle("RPM kontrolleri sättimine")
+        bind_text(self, 'RPM controller settings', property_name="windowTitle")
         
-        self.label80 = QLabel("Miinimum PWM väärtus")
+        self.label80 = bind_text(QLabel(), 'Minimum PWM value')
         layout5.addWidget(self.label80)
         
         self.min_pwm = QSpinBox()
@@ -27,11 +28,11 @@ class RPM_controller_1(QWidget):
         self.min_pwm.setValue(self.shared_data.min_pwm)
         layout5.addWidget(self.min_pwm)
         
-        self.min_pwm_button = QPushButton("Kinnita miinimum PWMi väärtus", self)
+        self.min_pwm_button = bind_text(QPushButton(self), 'Apply minimum PWM value')
         self.min_pwm_button.clicked.connect(self.enter_min_pwm)
         layout5.addWidget(self.min_pwm_button)
         
-        self.label81 = QLabel("Maksimum PWM väärtus")
+        self.label81 = bind_text(QLabel(), 'Maximum PWM value')
         layout5.addWidget(self.label81)
         
         self.max_pwm = QSpinBox()
@@ -41,19 +42,19 @@ class RPM_controller_1(QWidget):
         self.max_pwm.setValue(self.shared_data.max_pwm)
         layout5.addWidget(self.max_pwm)
         
-        self.max_pwm_button = QPushButton("Kinnita maksimum PWMi väärtus", self)
+        self.max_pwm_button = bind_text(QPushButton(self), 'Apply maximum PWM value')
         self.max_pwm_button.clicked.connect(self.enter_max_pwm)
         layout5.addWidget(self.max_pwm_button)
         
-        self.send_max_pwm_button = QPushButton("Saada maksimum PWM", self)
+        self.send_max_pwm_button = bind_text(QPushButton(self), 'Send maximum PWM')
         self.send_max_pwm_button.clicked.connect(self.send_max_pwm)
         layout5.addWidget(self.send_max_pwm_button)
         
-        self.send_min_pwm_button = QPushButton("Saada miinimum PWM", self)
+        self.send_min_pwm_button = bind_text(QPushButton(self), 'Send minimum PWM')
         self.send_min_pwm_button.clicked.connect(self.send_min_pwm)
         layout5.addWidget(self.send_min_pwm_button)
         
-        self.label82 = QLabel("Vali signaali tõusukiirus (ms)")
+        self.label82 = bind_text(QLabel(), 'Signal ramp interval (ms)')
         layout5.addWidget(self.label82)
         
         self.set_ramp = QSpinBox()
@@ -63,7 +64,7 @@ class RPM_controller_1(QWidget):
         self.set_ramp.setValue(self.shared_data.pwm_ramp_ms)
         layout5.addWidget(self.set_ramp)
         
-        self.set_ramp_button = QPushButton("Kinnita tõusukiirus (ms)", self)
+        self.set_ramp_button = bind_text(QPushButton(self), 'Apply ramp interval (ms)')
         self.set_ramp_button.clicked.connect(self.send_set_ramp)
         layout5.addWidget(self.set_ramp_button)
 
@@ -85,7 +86,7 @@ class RPM_controller_1(QWidget):
     def enter_min_pwm(self):
         try:
             self.shared_data.min_pwm = self.min_pwm.value()
-            min_pwm_data = 'setMin|%d|%d' % (0, self.shared_data.min_pwm)
+            min_pwm_data = 'setMin|%d|%d' % (1, self.shared_data.min_pwm)
             self.sendData.emit(min_pwm_data)
             self.min_pwm_button.setStyleSheet("background-color: None; color: None;")
         except serial.SerialException as e:
@@ -94,7 +95,7 @@ class RPM_controller_1(QWidget):
     def enter_max_pwm(self):
         try:
             self.shared_data.max_pwm = self.max_pwm.value()
-            max_pwm_data = 'setMax|%d|%d' % (0, self.shared_data.max_pwm)
+            max_pwm_data = 'setMax|%d|%d' % (1, self.shared_data.max_pwm)
             self.sendData.emit(max_pwm_data)
             self.max_pwm_button.setStyleSheet("background-color: None; color: None;")
         except serial.SerialException as e:
@@ -103,10 +104,10 @@ class RPM_controller_1(QWidget):
     def send_min_pwm(self):
         send_min_pwm = 'firstMotorTest|%d' %(self.min_pwm.value())
         self.sendData.emit(send_min_pwm)
-        send_max_pwm_button.setStyleSheet("background-color: None; color: None;")
+        self.send_max_pwm_button.setStyleSheet("background-color: None; color: None;")
         
     def send_max_pwm(self):
         send_max_pwm = 'firstMotorTest|%d' %(self.max_pwm.value())
         self.sendData.emit(send_max_pwm)
-        send_max_pwm_button.setStyleSheet("background-color: green; color: white;")
+        self.send_max_pwm_button.setStyleSheet("background-color: green; color: white;")
         

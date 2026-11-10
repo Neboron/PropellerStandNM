@@ -1,6 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from i18n import language_manager, tr
 
 class Canvas(FigureCanvasQTAgg):
     def __init__(self):
@@ -11,6 +12,17 @@ class Canvas(FigureCanvasQTAgg):
         self.plot_lines_ax1 = {}
         self.plot_lines_ax2 = {}
         self.fig.tight_layout()
+        language_manager().changed.connect(self.retranslate)
+
+    def retranslate(self):
+        # Registry keys stay language-independent so samples keep their series.
+        for axis, lines in ((self.ax1, self.plot_lines_ax1),
+                            (self.ax2, self.plot_lines_ax2)):
+            for source, line in lines.items():
+                line.set_label(tr(source))
+            if lines:
+                axis.legend()
+        self.draw_idle()
 
     def add_data_ax1(self, x, y, label, style):
         if label in self.plot_lines_ax1:
@@ -18,7 +30,7 @@ class Canvas(FigureCanvasQTAgg):
             line.set_xdata(np.append(line.get_xdata(), x))
             line.set_ydata(np.append(line.get_ydata(), y))
         else:
-            self.plot_lines_ax1[label], = self.ax1.plot(x, y, style, label=label)
+            self.plot_lines_ax1[label], = self.ax1.plot(x, y, style, label=tr(label))
             self.ax1.legend()
         self.ax1.relim(); self.ax1.autoscale_view(True, True, True); self.draw_idle()
 
@@ -28,7 +40,7 @@ class Canvas(FigureCanvasQTAgg):
             line.set_xdata(np.append(line.get_xdata(), x))
             line.set_ydata(np.append(line.get_ydata(), y))
         else:
-            self.plot_lines_ax2[label], = self.ax2.plot(x, y, style, label=label)
+            self.plot_lines_ax2[label], = self.ax2.plot(x, y, style, label=tr(label))
             self.ax2.legend()
 
     def draw_ax2(self):

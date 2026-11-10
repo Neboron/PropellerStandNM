@@ -12,7 +12,7 @@ from typing import Iterable, List, Optional, Tuple
 
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
 
-MEAS_PREFIX = "Measurements:"  # exact prefix printed by the MCU
+MEAS_PREFIX = "Measurements:"  # internal GUI presentation label; binary on the wire
 
 
 @dataclass
@@ -23,21 +23,21 @@ class MeasurePoint:
 
 class MeasuringWorker(QObject):
     """
-    Drives the stepper via 'm|X|Y|' commands, and logs MCU 'Measurements:' frames.
-    - points are given in *steps* (your trajectory files already use steps)
+    Drives typed measurement moves through the GUI adapter and logs decoded samples.
+    - points and trajectory coordinates are given in steps
     - MainWindow should parse the incoming line and emit:
         measurementsFrame.emit(x_steps, y_steps, vals13)
       where vals13 is a list of 10 or 13 floats in this order:
         [ X, Y, thr1, trq1, rpm1, airspeed, aoa_raw, aoa_abs, aoss_raw, aoss_abs, (thr2, trq2, rpm2)? ]
-    - We average N samples per point (samples_per_point) before advancing motion.
+    - MOVE_DONE events advance motion; telemetry positions alone never dispatch another move.
     - CSV writing is *decoupled* from waypoints: it logs baseline at 0 mm then every Δx mm, regardless of trajectory.
     """
 
     # Outbound: connect this to MainWindow's serial write slot
     sendData = pyqtSignal(str)
     
-    # NEW: stream fully-processed (averaged/normalized) CSV rows to the UI
-    # Shape matches your active CSV header:
+    # Stream processed CSV rows to the UI.
+    # Row layout matches the active CSV header:
     #  - 1 prop: [Prop_in, X, Y, Trq1, Thr1, Omega1, Air, AoA, AoSS, V_tan, V_rad, V_ax]
     #  - 2 prop: [Prop_in, X, Y, Trq1, Thr1, Omega1, Air, AoA, AoSS, V_tan, V_rad, V_ax, Trq2, Thr2, Omega2]
     liveData = pyqtSignal(list)
@@ -116,21 +116,21 @@ class MeasuringWorker(QObject):
         self._last_rpm1: float = 0.0
         self._last_rpm2: float = 0.0
         self._rpm_gate_active = False
-        self._rpm_min = 500.0          # adjust to your setup
+        self._rpm_min = 500.0          # Minimum RPM for the stability gate
         self._rpm_stable_delta = 50.0  # max change between frames
         self._rpm_stable_needed = 5    # frames needed within delta
         self._rpm_stable_count = 0
         self._rpm_last_seen = None
         
         try:
-            # Allow override from UI SharedData if you want later (optional)
+            # Use the configured pre-settle distance when available.
             pre_mm = float(getattr(getattr(self.parent(), "shared_data", object()), "pre_settle_mm", 5.0))
         except Exception:
             pre_mm = 5.0
         self._pre_settle_mm = max(0.0, min(10.0, pre_mm))  # clamp to 0–10 mm
         self._pre_settle_active = False   # true only during the dither
         self._pre_state = 0               # 0:not started, 1:going +X, 2:returning to center
-        self._pre_targets = None          # (pt_plus, pt_center) once we know Y
+        self._pre_targets = None          # (pt_plus, pt_center), including the Y coordinate
         self._pre_started = False
 
         # CSV
@@ -225,9 +225,11 @@ class MeasuringWorker(QObject):
                 self.sendData.emit("startMotor|1000|1000")
         self._pending_motor_start = False
 
-        # 🟢 Delay a few seconds before sending pre-settle move
+        # Delay the pre-settle move until motor spin-up.
         if self._pre_settle_active and not self._pre_started:
             def _delayed_pre_settle():
+                if not self._running:
+                    return
                 try:
                     dither_steps = int(round(self._pre_settle_mm * self._steps_per_mm))
                     y0 = self._points[0].y_steps if self._points else 0
@@ -242,7 +244,7 @@ class MeasuringWorker(QObject):
                 except Exception as e:
                     print(f"[MW] Pre-settle init failed: {e}")
 
-            # ⏱delay 5 seconds after motor start
+            # Allow five seconds after motor start.
             QTimer.singleShot(5000, _delayed_pre_settle)
 
         # schedule the sweep kickoff (will wait if pre-settle still active)
@@ -252,6 +254,8 @@ class MeasuringWorker(QObject):
 
     @pyqtSlot()
     def _kickoff_points(self):
+        if not self._running:
+            return
         # Don't send the first waypoint while the pre-settle dither is active.
         if getattr(self, "_pre_settle_active", False):
             QTimer.singleShot(100, self._kickoff_points)
@@ -264,9 +268,37 @@ class MeasuringWorker(QObject):
         if getattr(self, "_sweep_started", False):
             return
         self._sweep_started = True
-        # Make sure we start at index 0
+        # Reset the waypoint index.
         self._cur_idx = -1
         self._advance_to_next_point()
+
+    @pyqtSlot(int, int)
+    def on_move_done(self, x_steps, y_steps):
+        """Advance only after firmware has completed the active movement."""
+        if not self._running:
+            return
+        if self._pre_settle_active:
+            if not self._pre_started or self._pre_targets is None:
+                return
+            first, center = self._pre_targets
+            target = first if self._pre_state == 1 else center
+            if (x_steps, y_steps) != (target.x_steps, target.y_steps):
+                return
+            if self._pre_state == 1:
+                self._pre_state = 2
+                self._send_move(center)
+            else:
+                self._pre_settle_active = False
+                self._x_start_steps = None
+                self._bins_logged = 0
+                self._logged_zero = False
+                self._bin_samples.clear()
+                self._start_sweep_once()
+            return
+        target = self._cur_target
+        if target is not None and (x_steps, y_steps) == (target.x_steps, target.y_steps):
+            self.pointDone.emit(self._cur_idx)
+            self._advance_to_next_point()
 
     @pyqtSlot()
     def cancel(self):
@@ -308,49 +340,7 @@ class MeasuringWorker(QObject):
             cur_rpm1 = 0.0
             
         if self._pre_settle_active:
-            # We rely on measured positions to build the dither targets on the first frame
-            if not self._pre_started:
-                try:
-                    x_meas_int = int(x_meas)
-                    y_meas_int = int(y_meas)
-                except Exception:
-                    return  # wait for a valid frame
-
-                dither_steps = int(round(self._pre_settle_mm * self._steps_per_mm))
-                plus_pt   = MeasurePoint(self._x_center_steps - dither_steps, y_meas_int)
-                center_pt = MeasurePoint(self._x_center_steps,                 y_meas_int)
-                self._pre_targets = (plus_pt, center_pt)
-                self._pre_started = True
-                self._pre_state = 1
-                # Go +X using the same m|X|Y|feed_xy|feed_y you already use
-                self._send_move(plus_pt)
-                return  # do not collect/log during pre-settle
-
-            # We’ve started; track arrival and sequence the two legs
-            plus_pt, center_pt = self._pre_targets
-            tol = self._arrival_tol
-
-            if self._pre_state == 1:
-                dx = abs(int(x_meas) - plus_pt.x_steps)
-                dy = abs(int(y_meas) - plus_pt.y_steps)
-                if dx <= tol and dy <= tol:
-                    self._pre_state = 2
-                    self._send_move(center_pt)
-                return  # still settling; don't log
-
-            if self._pre_state == 2:
-                dx = abs(int(x_meas) - center_pt.x_steps)
-                dy = abs(int(y_meas) - center_pt.y_steps)
-                if dx <= tol and dy <= tol:
-                    # Done settling → reset binning state and begin normal run
-                    self._pre_settle_active = False
-                    self._x_start_steps = None
-                    self._bins_logged = 0
-                    self._logged_zero = False
-                    self._bin_samples.clear()
-                    # Start the sweep exactly once
-                    self._start_sweep_once()
-                return  # don't fall through during this frame
+            return  # pre-settle motion advances only on correlated MOVE_DONE events
 
         # Update last RPMs as before
         self._last_rpm1 = cur_rpm1
@@ -415,9 +405,7 @@ class MeasuringWorker(QObject):
             dy = abs(y_meas - self._cur_target.y_steps)
             if dx <= self._arrival_tol and dy <= self._arrival_tol:
                 self._cur_samples.append(vals)
-                if (time.monotonic() - self._t_start_point) > self._settle_timeout_s or len(self._cur_samples) >= self._samples_per_point:
-                    self.pointDone.emit(self._cur_idx)
-                    self._advance_to_next_point()
+                # Completion is received separately; position tolerance is not an ACK.
 
     # ---------- internals ----------
 
@@ -435,7 +423,7 @@ class MeasuringWorker(QObject):
         return [a / n for a in acc]
 
     def _send_move(self, pt: MeasurePoint):
-        """MCU expects m|X|Y|feed_xy|feed_y"""
+        """Send a move through the GUI adapter, which encodes MEASURE_MOVE."""
         feed_xy = 200
         try:
             mw = self.parent()
@@ -447,6 +435,8 @@ class MeasuringWorker(QObject):
 
     def _advance_to_next_point(self):
         """Move to next point or finish."""
+        if not self._running:
+            return
         # Overall timeout check
         if self._overall_timeout_s is not None:
             if time.monotonic() - self._t_start_overall > self._overall_timeout_s:
@@ -468,8 +458,6 @@ class MeasuringWorker(QObject):
         # Kick off motion
         self._send_move(self._cur_target)
 
-        # Harmless nudge to keep serial alive in some stacks
-        self.sendData.emit("")
 
     def _write_row(self, *args):
         """
@@ -587,7 +575,7 @@ class MeasuringWorker(QObject):
 
             self._csv_writer.writerow(row)
             self._csv_file.flush()
-            # NEW: publish live row to UI listeners
+            # Publish the row to UI listeners.
             try:
                 self.liveData.emit(list(row))
             except Exception:

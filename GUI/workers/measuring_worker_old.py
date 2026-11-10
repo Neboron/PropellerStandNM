@@ -21,7 +21,7 @@ class MeasurePoint:
 class MeasuringWorker(QObject):
     """
     Drives the stepper via 'm|X|Y|' commands, and logs MCU 'Measurements:' frames.
-    - points are given in *steps* (your trajectory files already use steps)
+    - points and trajectory coordinates are given in steps
     - main window should parse the incoming line and emit:
         measurementsFrame.emit(x_steps, y_steps, vals13)
       where vals13 is a list of 13 floats in this order:
@@ -187,7 +187,7 @@ class MeasuringWorker(QObject):
         
     @pyqtSlot()
     def _kickoff_points(self):
-        # this is what you currently do at the end of start():
+        # Finish the startup sequence.
         #self._cur_idx = -1
         self._advance_to_next_point()
 
@@ -618,7 +618,7 @@ class MeasuringWorker(QObject):
 #         self._start_stream_and_motors()
 #         w.progress.setValue(10)
 # 
-#         # small centering jog (as in your original)
+#         # Small centering jog
 #         try:
 #             self._send_move(int((self.shared_data.x_center - 3) * self.shared_data.ratio),
 #                             int(w.Y_pos.value() * self.shared_data.ratio),
@@ -715,7 +715,7 @@ class MeasuringWorker(QObject):
 #                 aoss_avg = statistics.mean(self.aoss_a) if self.aoss_a else 0.0
 #                 aoa_avg  = statistics.mean(self.aoa_a)  if self.aoa_a  else 0.0
 #                 arspd_avg= statistics.mean(self.arspd_a)if self.arspd_a else 0.0
-#                 if arspd_avg > 100.0:  # your guard
+#                 if arspd_avg > 100.0:  # Airspeed validity limit
 #                     arspd_avg = 0.0
 #                 omega_avg= statistics.mean(self.omega_a) if self.omega_a else 0.0
 # 
